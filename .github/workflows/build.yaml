@@ -115,11 +115,15 @@ jobs:
           echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
 
           CFG="config.yaml"
-          VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
-          if [[ -z "${VER}" ]]; then
+          BASE_VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
+          if [[ -z "${BASE_VER}" ]]; then
             echo "ERROR: cannot read version from ${CFG}"
             exit 1
           fi
+          # Strip run_number suffix if already bumped, then recompute — keeps
+          # amd64 and aarch64 in sync regardless of which ran the bump step.
+          BASE_VER="$(echo "${BASE_VER}" | sed -E 's/^([0-9]+\.[0-9]+\.[0-9]+-dev).*/\1/')"
+          VER="${BASE_VER}.${{ github.run_number }}"
           echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
           echo "Building dev version ${VER}"
 
