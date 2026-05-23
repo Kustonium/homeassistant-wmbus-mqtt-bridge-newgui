@@ -523,6 +523,24 @@ def add_meter_to_options(meter_id: str, driver: str, key: str, meter_name: str =
 
 
 
+def _remove_meter_from_tsv(meter_id: str) -> None:
+    """Remove a row from status_meters.tsv so the meter disappears from the WebGUI immediately.
+
+    bridge.sh only appends/updates TSV rows when a decoded telegram arrives.
+    Without this cleanup the deleted meter would remain visible until the next
+    addon restart (when bridge.sh stops receiving telegrams for the removed meter
+    and the row naturally ages out — which can take hours).
+    """
+    try:
+        if not METERS_TSV.exists():
+            return
+        lines = METERS_TSV.read_text(encoding="utf-8", errors="replace").splitlines()
+        new_lines = [l for l in lines if l.split("\t")[0] != meter_id]
+        write_lines_atomic(METERS_TSV, new_lines)
+    except Exception:
+        pass  # non-fatal — worst case the row disappears after restart
+
+
 def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
     """Remove a meter from options via HA Supervisor API."""
     import urllib.request
@@ -560,6 +578,10 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status in (200, 201):
+                    # Also write locally so subsequent reads see the updated list
+                    write_json_atomic(OPTIONS_JSON, options)
+                    # Remove from TSV immediately — bridge.sh won't clean it on its own
+                    _remove_meter_from_tsv(meter_id)
                     msg = f"Meter {meter_id} removed. Restart addon to apply."
                     webui_add_event("ok", msg)
                     return True, msg
@@ -571,6 +593,7 @@ def remove_meter_from_options(meter_id: str) -> tuple[bool, str]:
 
     # Fallback
     write_json_atomic(OPTIONS_JSON, options)
+    _remove_meter_from_tsv(meter_id)
     msg = f"Meter {meter_id} removed (file only — no SUPERVISOR_TOKEN)."
     webui_add_event("warn", msg)
     return True, msg
