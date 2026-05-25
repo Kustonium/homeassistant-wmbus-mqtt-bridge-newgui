@@ -818,6 +818,15 @@ def status_model(data: dict) -> dict:
                 raw_15m = raw_count
     except Exception:
         pass
+    # Telegrams-per-minute: sum seen_60m across all candidates and meters ÷ 60.
+    # seen_60m counts unique telegrams received per device in the last 60 minutes;
+    # summing gives a good approximation of the total reception rate.
+    total_60m = (
+        sum(safe_int(c.get("seen_60m")) for c in data.get("candidates", []))
+        + sum(safe_int(m.get("seen_60m")) for m in data.get("meters", []))
+    )
+    raw_per_min = round(total_60m / 60, 1) if total_60m > 0 else 0.0
+
     return {
         "status": status,
         "cfg": cfg,
@@ -836,6 +845,7 @@ def status_model(data: dict) -> dict:
         "decoded_ok": decoded_ok,
         "discovery_ok": discovery_ok,
         "raw_15m": raw_15m,
+        "raw_per_min": raw_per_min,
     }
 
 
@@ -1112,19 +1122,22 @@ def render_system_status(model: dict) -> str:
     </div><div class="last-line"><span>Last RAW telegram</span><span>{esc(fmt_ts(pipe.get('last_raw_seen') or '') or 'not seen this session')} <span class="pill raw">RAW</span></span></div></section>'''
 
 
-def render_stats(model: dict) -> str:
+def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
     raw = model['raw_count']
     decoded = model['decoded_count']
     candidates = model['candidate_count']
     meters = model['meter_count']
+    per_min = model['raw_per_min']
+    per_min_str = f"{per_min:.1f}" if per_min != int(per_min) else str(int(per_min))
     max_value = max(raw, decoded, candidates, meters, 1)
     return f'''
-    <section class="card"><h2>Statistics</h2><div class="metric-list">
-      <div class="metric-row"><div class="metric-icon">📡</div><div><div class="metric-title">RAW telegrams</div><div class="metric-value">{raw}</div></div>{mini_bar(raw, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon">⌘</div><div><div class="metric-title">Decoded JSON</div><div class="metric-value">{decoded}</div></div>{mini_bar(decoded, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon purple">▣</div><div><div class="metric-title">Detected candidates</div><div class="metric-value">{candidates}</div></div>{mini_bar(candidates, max_value)}</div>
-      <div class="metric-row"><div class="metric-icon green">◇</div><div><div class="metric-title">Configured meters</div><div class="metric-value">{meters}</div></div>{mini_bar(meters, max_value)}</div>
-    </div><div class="sub" style="margin-top:12px;font-size:12px;">Bars are relative to the largest visible value, not historical charts.</div></section>'''
+    <section class="card"><h2>{esc(tr(lang, "statistics"))}</h2><div class="metric-list">
+      <div class="metric-row"><div class="metric-icon">📡</div><div><div class="metric-title">{esc(tr(lang, "raw_telegrams_metric"))}</div><div class="metric-value">{raw}</div></div>{mini_bar(raw, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon">⌘</div><div><div class="metric-title">{esc(tr(lang, "decoded_json_metric"))}</div><div class="metric-value">{decoded}</div></div>{mini_bar(decoded, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon purple">▣</div><div><div class="metric-title">{esc(tr(lang, "detected_candidates"))}</div><div class="metric-value">{candidates}</div></div>{mini_bar(candidates, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon green">◇</div><div><div class="metric-title">{esc(tr(lang, "configured_meters"))}</div><div class="metric-value">{meters}</div></div>{mini_bar(meters, max_value)}</div>
+      <div class="metric-row"><div class="metric-icon" style="background:#0f2a2d;color:#00d4c8;">⏱</div><div><div class="metric-title">{esc(tr(lang, "telegrams_per_min_metric"))}</div><div class="metric-value">{per_min_str}</div></div><div style="color:#607a88;font-size:11px;text-align:right;align-self:center;white-space:nowrap;">60 min avg</div></div>
+    </div><div class="sub" style="margin-top:12px;font-size:12px;">{esc(tr(lang, "bars_relative_note"))}</div></section>'''
 
 
 def render_discovery(model: dict) -> str:
@@ -1472,7 +1485,7 @@ def page_dashboard(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
     pending = pending_meters(data)
     body = f'''
       <h1>{esc(tr(lang, "dashboard_title"))}</h1><div class="sub">{esc(tr(lang, "dashboard_sub"))}</div>
-      <section class="grid3">{render_system_status(model)}{render_stats(model)}{render_discovery(model)}</section>
+      <section class="grid3">{render_system_status(model)}{render_stats(model, lang)}{render_discovery(model)}</section>
       {render_pending_panel(pending, lang)}
       {render_waiting_panel(data, lang)}
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "configured_meters"))}</h2>{render_filter_links('.', media, lang)}</div>{render_configured_meters(meters, max_items=6, lang=lang, pending=pending, cfg=model["cfg"])}</section>
