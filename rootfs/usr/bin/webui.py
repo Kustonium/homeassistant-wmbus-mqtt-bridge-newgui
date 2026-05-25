@@ -38,20 +38,34 @@ ZERO_AES_KEY = "00000000000000000000000000000000"
 
 def read_addon_version() -> tuple[str, bool]:
     import re as _re, os as _os
+    # Read config.yaml once — used both for version and slug-based dev detection.
+    cfg_text = ""
+    is_dev_slug = False
+    try:
+        cfg_path = Path(__file__).parent / "config.yaml"
+        cfg_text = cfg_path.read_text(encoding="utf-8")
+        slug_m = _re.search(r'^slug:\s*["\']?(\S+?)["\']?\s*$', cfg_text, _re.MULTILINE)
+        if slug_m:
+            is_dev_slug = "dev" in slug_m.group(1).lower()
+    except Exception:
+        pass
+
+    def _is_dev(ver: str) -> bool:
+        # A build is dev if: version contains "-" (e.g. 1.5.9-dev.15),
+        # "dev" appears anywhere in the version string,
+        # or the addon slug ends with "_dev" / contains "dev".
+        return "-" in ver or "dev" in ver.lower() or is_dev_slug
+
     # 1. Env var injected by CI build-arg (most accurate for dev builds)
     env_ver = _os.environ.get("ADDON_VERSION", "").strip()
     if env_ver:
-        return env_ver, "-" in env_ver
-    # 2. Fallback: read from config.yaml next to this script
-    try:
-        cfg_path = Path(__file__).parent / "config.yaml"
-        text = cfg_path.read_text(encoding="utf-8")
-        m = _re.search(r'^version:\s*["\']?([^\s"\']+)["\']?', text, _re.MULTILINE)
+        return env_ver, _is_dev(env_ver)
+    # 2. Fallback: read version from config.yaml next to this script
+    if cfg_text:
+        m = _re.search(r'^version:\s*["\']?([^\s"\']+)["\']?', cfg_text, _re.MULTILINE)
         if m:
             v = m.group(1).strip()
-            return v, "-" in v
-    except Exception:
-        pass
+            return v, _is_dev(v)
     return "dev", True
 
 
@@ -1733,6 +1747,20 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
     else:
         status_banner = ""
 
+    # Suggested meter name for the candidate page forms
+    last4_cand = mid[-4:].upper()
+    mclass_cand = media_class(candidate.get('type', ''), driver)
+    if mclass_cand == "warm_water":
+        suggested_name_cand = f"Warm_Water_{last4_cand}"
+    elif mclass_cand in ("water", "cold_water"):
+        suggested_name_cand = f"Cold_Water_{last4_cand}"
+    elif mclass_cand == "electricity":
+        suggested_name_cand = f"Electricity_{last4_cand}"
+    elif mclass_cand == "heat":
+        suggested_name_cand = f"Heat_{last4_cand}"
+    else:
+        suggested_name_cand = f"meter_{mid}" if not driver or driver == "auto" else f"{driver[:12]}_{last4_cand}"
+
     # AES key input + add-meter form
     if aes_required:
         add_form = f"""
@@ -1754,6 +1782,12 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       </div>
       <span id="key-status" style="font-size:12px;font-weight:800;min-width:50px;margin-top:18px;"></span>
     </div>
+    <div style="margin-bottom:10px;">
+      <label style="color:#95adbd;font-size:12px;display:block;margin-bottom:4px;">{esc(tr(lang, "meter_name_label"))}</label>
+      <input type="text" name="meter_name" value="{esc(suggested_name_cand)}"
+        style="width:100%;background:#0e151b;border:1px solid #5a2020;color:#e8f1f8;
+               border-radius:6px;padding:8px 10px;font-size:13px;box-sizing:border-box;">
+    </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <button id="btn-add" class="button good" type="submit" disabled
         style="opacity:0.4;cursor:not-allowed;">{esc(tr(lang, "add_meter_btn"))}</button>
@@ -1772,6 +1806,12 @@ def page_candidate(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
   <input type="hidden" name="meter_id" value="{esc(mid)}">
   <input type="hidden" name="driver"   value="{esc(driver)}">
   <input type="hidden" name="key"      value="">
+  <div style="margin-bottom:10px;">
+    <label style="color:#95adbd;font-size:12px;display:block;margin-bottom:4px;">{esc(tr(lang, "meter_name_label"))}</label>
+    <input type="text" name="meter_name" value="{esc(suggested_name_cand)}"
+      style="width:100%;background:#0e151b;border:1px solid #2a4555;color:#e8f1f8;
+             border-radius:6px;padding:8px 10px;font-size:13px;box-sizing:border-box;">
+  </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
     <button class="button good" type="submit"{'disabled style="opacity:0.5;cursor:not-allowed;"' if already_added else ''}>{esc(tr(lang, "add_meter_btn"))}</button>
     <span style="color:#95adbd;font-size:12px;">{esc(tr(lang, "saves_then_restart"))}</span>
