@@ -2088,22 +2088,28 @@ def page_logs(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LANG
 # ---------------------------------------------------------------------------
 _ESP_EVENT_COLORS: dict[str, str] = {
     "summary":            "#00bcd4",
+    "summary_15min":      "#00acc1",
+    "summary_60min":      "#0097a7",
     "dropped":            "#ff9800",
     "truncated":          "#e57c3b",
     "suggestion":         "#ffd600",
     "boot":               "#4caf50",
     "busy_ether_changed": "#9c27b0",
     "meter_snapshot":     "#009688",
+    "meter_window":       "#26a69a",
     "rx_path":            "#64b5f6",
 }
 _ESP_EVENT_ICONS: dict[str, str] = {
     "summary":            "📊",
+    "summary_15min":      "📊",
+    "summary_60min":      "📊",
     "dropped":            "⚠",
     "truncated":          "✂",
     "suggestion":         "💡",
     "boot":               "🔄",
     "busy_ether_changed": "📡",
     "meter_snapshot":     "📸",
+    "meter_window":       "📈",
     "rx_path":            "📶",
 }
 
@@ -2113,7 +2119,7 @@ def _fmt_epoch(epoch_str: str) -> str:
         t = int(epoch_str)
         if t <= 0:
             return "-"
-        return datetime.fromtimestamp(t, tz=timezone.utc).strftime("%H:%M:%S")
+        return datetime.fromtimestamp(t).strftime("%H:%M:%S")  # local time
     except Exception:
         return str(epoch_str)[:10] if epoch_str else "-"
 
@@ -2127,6 +2133,8 @@ def _esp_event_summary(payload_str: str, evtype: str) -> str:
     parts = []
     key_map: dict[str, list[str]] = {
         "summary":            ["listen_mode", "total", "ok", "dropped", "drop_pct", "avg_ok_rssi"],
+        "summary_15min":      ["listen_mode", "total", "ok", "dropped", "drop_pct", "avg_ok_rssi"],
+        "summary_60min":      ["listen_mode", "total", "ok", "dropped", "drop_pct", "avg_ok_rssi"],
         "dropped":            ["stage", "reason", "detail", "mode"],
         "truncated":          ["stage", "reason", "detail", "mode"],
         "rx_path":            ["stage", "mode", "rssi"],
@@ -2134,6 +2142,7 @@ def _esp_event_summary(payload_str: str, evtype: str) -> str:
         "boot":               ["chip", "version"],
         "busy_ether_changed": ["chip", "state", "drop_pct"],
         "meter_snapshot":     ["trigger", "elapsed_s"],
+        "meter_window":       ["trigger", "id", "mode", "count_window", "count_total", "win_avg_rssi"],
     }
     keys = key_map.get(evtype, list(d.keys())[:6])
     for k in keys:

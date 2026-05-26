@@ -580,6 +580,12 @@ touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
       _ets="$(date +%s 2>/dev/null || echo 0)"
       _evtype="$(printf '%s\n' "${_epayload}" | jq -r '.event // "unknown"' 2>/dev/null || echo "unknown")"
       [[ -n "${_evtype}" && "${_evtype}" != "null" ]] || _evtype="unknown"
+      # summary_15min and summary_60min publish JSON with "event":"summary" (same as 60s).
+      # Override evtype from the MQTT topic suffix so they appear distinctly in the log.
+      case "${_etopic}" in
+        */summary_15min) _evtype="summary_15min" ;;
+        */summary_60min) _evtype="summary_60min" ;;
+      esac
       printf '%s\t%s\t%s\t%s\n' "${_ets}" "${_evtype}" "${_etopic}" "${_epayload}" \
         >> "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
       _n=$(( _n + 1 ))
