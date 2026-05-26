@@ -45,6 +45,7 @@ COPY rootfs /
 COPY config.yaml /usr/bin/config.yaml
 
 COPY docker/entrypoint.sh /usr/bin/docker-entrypoint.sh
+# docker standalone entry point — used when running outside HA supervisor
 
 RUN sed -i 's/\r$//' /usr/bin/run.sh /usr/bin/bridge.sh /usr/bin/docker-entrypoint.sh \
   && chmod a+x \
