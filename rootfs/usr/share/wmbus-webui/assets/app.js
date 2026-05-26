@@ -113,12 +113,25 @@
     return "other";
   }
 
-  // Returns {icon, color, mc} — warm_water gets orange drop per design.
+  // Returns {icon, color, bg, mc}.
+  // Emoji like 💧 ignore CSS color — warm_water vs water is distinguished
+  // by the background circle colour (#3b2010 orange vs #0f2a3b blue).
   function mediaIcon(typeOrMedia, driver) {
     const mc = mediaClass(typeOrMedia, driver);
     const icon  = {electricity:"⚡", heat:"🔥", warm_water:"💧", water:"💧", other:"·"}[mc] || "·";
     const color = {electricity:"#60b4f0", heat:"#f07840", warm_water:"#f09040", water:"#40c0e0", other:"#607a88"}[mc] || "#607a88";
-    return {icon, color, mc};
+    const bg    = {electricity:"#1a2a3b", heat:"#3b2010",  warm_water:"#3b2010",  water:"#0f2a3b", other:"#1e2a30"}[mc] || "#1e2a30";
+    return {icon, color, bg, mc};
+  }
+
+  // Render a small coloured circle with the medium emoji inside.
+  // warm_water → orange circle, water → blue circle — distinguishable even
+  // though the 💧 emoji itself is always blue (emoji ignore CSS color).
+  function mediaIconHtml(typeOrMedia, driver) {
+    const {icon, bg} = mediaIcon(typeOrMedia, driver);
+    return `<span style="display:inline-flex;align-items:center;justify-content:center;` +
+           `width:22px;height:22px;border-radius:50%;background:${bg};` +
+           `font-size:13px;vertical-align:middle;">${icon}</span>`;
   }
 
   // Filter chip bar — renders pill buttons; active one gets .active class.
@@ -536,14 +549,14 @@
               .map((row) => {
                 const id = row.id || "";
                 const driver = row.driver || "auto";
-                const {icon, color, mc} = mediaIcon(row.type || "", driver);
+                const {mc} = mediaIcon(row.type || "", driver);
                 const mediaLabel = t(`media_${mc}`, mc);
                 return `
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
                     <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
-                    <td><span style="color:${color};">${icon}</span> ${escapeHtml(mediaLabel)}</td>
+                    <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(row.seen_15m || "0")}</td>
                     <td>${escapeHtml(row.seen_60m || "0")}</td>
