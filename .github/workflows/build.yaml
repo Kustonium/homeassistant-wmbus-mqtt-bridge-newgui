@@ -17,7 +17,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: build-addon-dev-${{ github.ref }}
+  group: build-addon-dev-qemu-${{ github.ref }}
   cancel-in-progress: true
 
 env:
