@@ -56,5 +56,11 @@ MQTT_PASS="$(jq -r '.external_mqtt_password // .mqtt.password // ""' "${OPTIONS_
 
 export MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASS
 
+WEBUI_PORT="${WEBUI_PORT:-8099}"
+export WEBUI_PORT
+
+echo "[wmbus-bridge] Starting WebGUI on port ${WEBUI_PORT}..."
+/usr/bin/python3 /usr/bin/webui.py &
+
 echo "[wmbus-bridge] Starting core bridge..."
 exec /usr/bin/bridge.sh
