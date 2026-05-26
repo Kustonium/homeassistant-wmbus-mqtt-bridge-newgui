@@ -59,6 +59,18 @@
 
   let liveSource = null;
   let liveLang = "";
+  let liveRenderTimer = null;
+
+  // Debounced render for SSE updates — prevents full DOM replacement on every
+  // incoming event (telegrams can arrive several times per second in busy networks).
+  // Button/fetch-triggered renders call render() directly and are unaffected.
+  function scheduleRender() {
+    if (liveRenderTimer) return;
+    liveRenderTimer = window.setTimeout(() => {
+      liveRenderTimer = null;
+      render();
+    }, 800);
+  }
 
   function currentRoute() {
     const hash = window.location.hash.replace(/^#\/?/, "");
@@ -232,14 +244,14 @@
     liveSource = new EventSource(url);
     liveSource.onopen = () => {
       state.liveConnected = true;
-      render();
+      scheduleRender();
     };
     liveSource.onmessage = (event) => {
       try {
         applyData(JSON.parse(event.data));
         state.loading = false;
         state.liveConnected = true;
-        render();
+        scheduleRender();
       } catch (error) {
         state.liveConnected = false;
       }
