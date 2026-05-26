@@ -20,9 +20,6 @@ concurrency:
   group: build-addon-dev-qemu-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build:
     name: Build wmbus_mqtt_bridge_dev (${{ matrix.arch }})
@@ -92,8 +89,6 @@ jobs:
           set -euo pipefail
           CFG="config.yaml"
           RAW_VER="$(sed -nE 's/^version:[[:space:]]*"?([^"[:space:]]+)"?[[:space:]]*$/\1/p' "${CFG}" | head -n1)"
-          # Extract X.Y.Z core — strips -dev and any .N suffix, so the result
-          # is always "X.Y.Z-dev.<run>" regardless of what was in config.yaml.
           CORE_VER="$(echo "${RAW_VER}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')"
           NEW_VER="${CORE_VER}-dev.${{ github.run_number }}"
           echo "Bumping dev version: ${RAW_VER} → ${NEW_VER}"
@@ -120,9 +115,6 @@ jobs:
             echo "ERROR: cannot read version from ${CFG}"
             exit 1
           fi
-          # Extract X.Y.Z core and always build "X.Y.Z-dev.<run>" — keeps
-          # amd64 and aarch64 in sync regardless of which ran the bump step,
-          # and works even if someone set a version without the -dev suffix.
           CORE_VER="$(echo "${RAW_VER}" | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+')"
           VER="${CORE_VER}-dev.${{ github.run_number }}"
           echo "ADDON_VERSION=${VER}" >> "$GITHUB_ENV"
@@ -147,8 +139,10 @@ jobs:
           password: ${{ secrets.GHCR_TOKEN }}
 
       - name: Set up QEMU
-        if: steps.gate.outputs.skip != 'true'
-        uses: docker/setup-qemu-action@v3
+        if: steps.gate.outputs.skip != 'true' && matrix.arch == 'aarch64'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
 
       - name: Set up Docker Buildx
         if: steps.gate.outputs.skip != 'true'
