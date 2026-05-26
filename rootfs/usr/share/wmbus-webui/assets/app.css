@@ -351,6 +351,36 @@ button {
   font-size: 12px;
 }
 
+.filters {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+
+.filter {
+  padding: 4px 12px;
+  border: 1px solid #2b4656;
+  border-radius: 999px;
+  color: #cbd9e1;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.filter:hover {
+  border-color: #176b8c;
+  color: #fff;
+}
+
+.filter.active {
+  background: #113349;
+  color: #32cfff;
+  border-color: #176b8c;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

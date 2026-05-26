@@ -54,6 +54,7 @@
     modal: null,
     toast: null,
     liveConnected: false,
+    mediaFilter: "all",
   };
 
   let liveSource = null;
@@ -85,6 +86,52 @@
 
   function asArray(value) {
     return Array.isArray(value) ? value : [];
+  }
+
+  // ── Media classification ──────────────────────────────────────────────────
+  // Works for both candidates (type = wmbusmeters type string like
+  // "Warm Water (30°C-90°C) meter (0x06)") and meters (media = wmbusmeters
+  // media field like "warm_water").
+  function mediaClass(typeOrMedia, driver) {
+    const s = ((typeOrMedia || "") + " " + (driver || "")).toLowerCase();
+    if (s.includes("electric"))                           return "electricity";
+    if (s.includes("warm_water") || s.includes("warm water") || s.includes("hot water")) return "warm_water";
+    if (s.includes("heat") || s.includes("caloric") || s.includes("cooling")) return "heat";
+    if (s.includes("water"))                              return "water";
+    return "other";
+  }
+
+  // Returns {icon, color, mc} — warm_water gets orange drop per design.
+  function mediaIcon(typeOrMedia, driver) {
+    const mc = mediaClass(typeOrMedia, driver);
+    const icon  = {electricity:"⚡", heat:"🔥", warm_water:"💧", water:"💧", other:"·"}[mc] || "·";
+    const color = {electricity:"#60b4f0", heat:"#f07840", warm_water:"#f09040", water:"#40c0e0", other:"#607a88"}[mc] || "#607a88";
+    return {icon, color, mc};
+  }
+
+  // Filter chip bar — renders pill buttons; active one gets .active class.
+  function filterChips() {
+    const active = state.mediaFilter || "all";
+    const filters = [
+      ["all",         t("filter_all",         "Wszystkie")],
+      ["water",       t("media_water",         "Woda")],
+      ["electricity", t("media_electricity",   "Prąd")],
+      ["heat",        t("media_heat",          "Ciepło")],
+      ["warm_water",  t("media_warm_water",    "Ciepła woda")],
+      ["other",       t("media_other",         "Inne")],
+    ];
+    const chips = filters.map(([key, label]) =>
+      `<span class="filter${key === active ? " active" : ""}" data-action="media-filter" data-filter="${key}" style="cursor:pointer;">${escapeHtml(label)}</span>`
+    ).join("");
+    return `<div class="filters"><span style="color:#9eafba;font-size:12px;">${escapeHtml(t("show", "Pokaż:"))}</span> ${chips}</div>`;
+  }
+
+  // Filter array rows by current mediaFilter; typeField is the row property
+  // that holds the wmbusmeters type/media string.
+  function applyMediaFilter(rows, typeField = "type") {
+    const active = state.mediaFilter || "all";
+    if (active === "all") return rows;
+    return rows.filter(r => mediaClass(r[typeField] || r.media || "", r.driver || "") === active);
   }
 
   function number(value) {
@@ -465,6 +512,7 @@
               <th>${escapeHtml(t("webui_id", "ID"))}</th>
               <th>${escapeHtml(t("driver", "Driver"))}</th>
               <th>${escapeHtml(t("webui_type", "Type"))}</th>
+              <th>${escapeHtml(t("media", "Medium"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
               <th>15m</th>
               <th>60m</th>
@@ -476,11 +524,14 @@
               .map((row) => {
                 const id = row.id || "";
                 const driver = row.driver || "auto";
+                const {icon, color, mc} = mediaIcon(row.type || "", driver);
+                const mediaLabel = t(`media_${mc}`, mc);
                 return `
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td>${escapeHtml(driver)}</td>
-                    <td>${escapeHtml(row.type || "-")}</td>
+                    <td style="color:#9eafba;font-size:12px;">${escapeHtml(row.type || "-")}</td>
+                    <td><span style="color:${color};">${icon}</span> ${escapeHtml(mediaLabel)}</td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(row.seen_15m || "0")}</td>
                     <td>${escapeHtml(row.seen_60m || "0")}</td>
@@ -504,26 +555,32 @@
 
   function metersPage() {
     const data = state.data || {};
+    const all = asArray(data.meters);
+    const filtered = applyMediaFilter(all, "media");
     return `
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("configured_meters", "Configured meters"))}</h2>
-          <span>${asArray(data.meters).length} ${escapeHtml(t("webui_meter_rows", "meter rows"))}</span>
+          <span>${filtered.length}${filtered.length !== all.length ? `/${all.length}` : ""} ${escapeHtml(t("webui_shown", "shown"))}</span>
         </div>
-        ${meterTable(asArray(data.meters), true)}
+        ${filterChips()}
+        ${meterTable(filtered, true)}
       </section>
     `;
   }
 
   function discoverPage() {
     const data = state.data || {};
+    const all = asArray(data.candidates);
+    const filtered = applyMediaFilter(all, "type");
     return `
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
-          <span>${asArray(data.candidates).length} ${escapeHtml(t("webui_visible", "visible"))}</span>
+          <span>${filtered.length}${filtered.length !== all.length ? `/${all.length}` : ""} ${escapeHtml(t("webui_visible", "visible"))}</span>
         </div>
-        ${candidateTable(asArray(data.candidates), true)}
+        ${filterChips()}
+        ${candidateTable(filtered, true)}
       </section>
       <section class="section">
         <div class="section-head">
@@ -845,6 +902,12 @@
         liveSource = null;
       }
       if (lang) await fetchData(lang);
+      return;
+    }
+
+    if (action === "media-filter") {
+      state.mediaFilter = target.dataset.filter || "all";
+      render();
       return;
     }
 
