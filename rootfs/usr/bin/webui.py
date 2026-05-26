@@ -1190,9 +1190,9 @@ def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
 
         <!-- Current minute -->
         <div style="padding:0 6px;">
-          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">Bieżąca minuta</div>
+          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">{esc(tr(lang, "rate_current_min_label"))}</div>
           <div style="font-size:38px;font-weight:900;color:#ffffff;line-height:1;">{current_min}</div>
-          <div style="color:#607a88;font-size:11px;margin-top:3px;">tel / min</div>
+          <div style="color:#607a88;font-size:11px;margin-top:3px;">{esc(tr(lang, "rate_tel_min"))}</div>
         </div>
 
         <!-- Divider -->
@@ -1200,9 +1200,9 @@ def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
 
         <!-- Previous minute -->
         <div style="padding:0 6px;">
-          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">Poprzednia minuta</div>
+          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">{esc(tr(lang, "rate_prev_min_label"))}</div>
           <div style="font-size:38px;font-weight:900;color:#b0c4d4;line-height:1;">{prev_min}</div>
-          <div style="color:#607a88;font-size:11px;margin-top:3px;">tel / min</div>
+          <div style="color:#607a88;font-size:11px;margin-top:3px;">{esc(tr(lang, "rate_tel_min"))}</div>
         </div>
 
         <!-- Divider -->
@@ -1210,9 +1210,9 @@ def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
 
         <!-- Trend -->
         <div style="padding:0 6px;">
-          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">Trend</div>
+          <div style="color:#8ea4b1;font-size:10px;text-transform:uppercase;letter-spacing:.07em;margin-bottom:4px;">{esc(tr(lang, "rate_trend_label"))}</div>
           <div style="display:flex;flex-direction:column;align-items:center;gap:0;line-height:1.1;">{trend_html}</div>
-          <div style="color:#607a88;font-size:11px;margin-top:3px;">vs poprzednia</div>
+          <div style="color:#607a88;font-size:11px;margin-top:3px;">{esc(tr(lang, "rate_vs_prev"))}</div>
         </div>
 
       </div>
