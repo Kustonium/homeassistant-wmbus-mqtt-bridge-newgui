@@ -118,7 +118,7 @@
   // by the background circle colour (#3b2010 orange vs #0f2a3b blue).
   function mediaIcon(typeOrMedia, driver) {
     const mc = mediaClass(typeOrMedia, driver);
-    const icon  = {electricity:"⚡", heat:"🔥", warm_water:"💧", water:"💧", other:"·"}[mc] || "·";
+    const icon  = {electricity:"⚡", heat:"🔥", warm_water:"🚰", water:"🚰", other:"·"}[mc] || "·";
     const color = {electricity:"#60b4f0", heat:"#f07840", warm_water:"#f09040", water:"#40c0e0", other:"#607a88"}[mc] || "#607a88";
     const bg    = {electricity:"#60b4f0", heat:"#f07840",  warm_water:"#f09040",  water:"#40c0e0", other:"#607a88"}[mc] || "#607a88";
     return {icon, color, bg, mc};
