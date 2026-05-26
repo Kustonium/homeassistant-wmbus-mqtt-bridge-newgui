@@ -1222,7 +1222,7 @@ def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
     <div class="metric-list">
       <div class="metric-row"><div class="metric-icon purple">▣</div><div><div class="metric-title">{esc(tr(lang, "detected_candidates"))}</div><div class="metric-value">{candidates}</div></div>{mini_bar(candidates, max_bar)}</div>
       <div class="metric-row"><div class="metric-icon green">◇</div><div><div class="metric-title">{esc(tr(lang, "configured_meters"))}</div><div class="metric-value">{meters}</div></div>{mini_bar(meters, max_bar)}</div>
-      <div class="metric-row"><div class="metric-icon" style="background:#0f2a2d;color:#00d4c8;">⏱</div><div><div class="metric-title">{esc(tr(lang, "telegrams_per_min_metric"))}</div><div class="metric-value">{per_min_str}</div></div><div style="color:#607a88;font-size:11px;text-align:right;align-self:center;white-space:nowrap;">60 min avg</div></div>
+      <div class="metric-row"><div class="metric-icon" style="background:#0f2a2d;color:#00d4c8;">⏱</div><div><div class="metric-title">{esc(tr(lang, "telegrams_per_min_metric"))}</div><div class="metric-value">{per_min_str}</div></div><div style="color:#607a88;font-size:11px;text-align:right;align-self:center;white-space:nowrap;">{esc(tr(lang, "rate_session_avg_label"))}</div></div>
     </div></section>'''
 
 
