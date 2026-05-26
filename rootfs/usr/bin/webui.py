@@ -2482,7 +2482,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
                     last_write = now
-                _time.sleep(2)
+                _time.sleep(0.5)
             except (BrokenPipeError, ConnectionResetError, OSError):
                 return
 
