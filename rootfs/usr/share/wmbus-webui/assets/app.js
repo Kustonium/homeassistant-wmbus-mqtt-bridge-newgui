@@ -118,20 +118,15 @@
   // by the background circle colour (#3b2010 orange vs #0f2a3b blue).
   function mediaIcon(typeOrMedia, driver) {
     const mc = mediaClass(typeOrMedia, driver);
-    const icon  = {electricity:"⚡", heat:"🔥", warm_water:"🚰", water:"🚰", other:"·"}[mc] || "·";
+    const icon  = {electricity:"⚡", heat:"🔥", warm_water:"🚱", water:"🚰", other:"·"}[mc] || "·";
     const color = {electricity:"#60b4f0", heat:"#f07840", warm_water:"#f09040", water:"#40c0e0", other:"#607a88"}[mc] || "#607a88";
-    const bg    = {electricity:"#60b4f0", heat:"#f07840",  warm_water:"#f09040",  water:"#40c0e0", other:"#607a88"}[mc] || "#607a88";
-    return {icon, color, bg, mc};
+    return {icon, color, mc};
   }
 
-  // Render a small coloured circle with the medium emoji inside.
-  // warm_water → orange circle, water → blue circle — distinguishable even
-  // though the 💧 emoji itself is always blue (emoji ignore CSS color).
+  // Render medium icon — just the emoji, no background circle.
   function mediaIconHtml(typeOrMedia, driver) {
-    const {icon, bg} = mediaIcon(typeOrMedia, driver);
-    return `<span style="display:inline-flex;align-items:center;justify-content:center;` +
-           `width:22px;height:22px;border-radius:50%;background:${bg};` +
-           `font-size:13px;vertical-align:middle;">${icon}</span>`;
+    const {icon} = mediaIcon(typeOrMedia, driver);
+    return `<span style="font-size:16px;vertical-align:middle;">${icon}</span>`;
   }
 
   // Filter chip bar — renders pill buttons; active one gets .active class.
