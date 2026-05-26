@@ -38,6 +38,10 @@ STATUS_RATE_1M_JSON = BASE / "status_rate_1m.json"
 STATUS_BRIDGE_START_FILE = BASE / "status_bridge_start.txt"
 # ESP diagnostic summary written by background subscriber in bridge.sh
 STATUS_ESP_DIAG_JSON = BASE / "status_esp_diag.json"
+# ESP events TSV and per-event detail files (written by bridge.sh event subscriber)
+STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
+STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
+STATUS_ESP_BOOT_FILE = BASE / "status_esp_boot.json"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
@@ -915,6 +919,7 @@ def nav(active: str, lang: str) -> str:
         ("discover", tr(lang, "nav_discover"), "discover"),
         ("search", tr(lang, "nav_search"), "search"),
         ("logs", tr(lang, "nav_logs"), "logs"),
+        ("esp-logs", tr(lang, "nav_esp_logs"), "esp-logs"),
         ("settings", tr(lang, "nav_settings"), "settings"),
         ("about", tr(lang, "nav_about"), "about"),
     ]
@@ -976,6 +981,7 @@ def shell(active: str, body: str, updated_at: str, refresh: bool = True, lang: s
     .event-row {{ display:grid; grid-template-columns:180px 82px 1fr; gap:10px; padding:9px 0; border-bottom:1px solid #273944; font-size:13px; }} .event-row strong.ok {{ color:var(--ok); }} .event-row strong.candidate,.event-row strong.warn {{ color:var(--warn); }} .event-row strong.error {{ color:var(--bad); }} .legend {{ margin:8px 0 12px; padding:10px 12px; border:1px dashed var(--line2); border-radius:8px; color:var(--muted); font-size:12px; display:grid; gap:4px; }} .legend b {{ color:var(--text); }} .empty {{ padding:20px; border:1px dashed #2c4555; border-radius:8px; color:#91a7b4; }}
     .footer {{ margin-top:14px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; background:#121d24; border:1px solid #213544; border-radius:8px; padding:11px 16px; color:#cbd9e1; font-size:12px; }} .about-text {{ color:#c5d5de; line-height:1.6; font-size:14px; }} .codebox, textarea.codebox {{ background:#0e151b; border:1px solid #253946; border-radius:8px; padding:14px; color:#c9d7df; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:13px; white-space:pre-wrap; width:100%; }}
     .toast {{ position:fixed; right:18px; bottom:18px; background:#0d3321; color:#6ff0a2; border:1px solid #1b6b42; padding:10px 14px; border-radius:8px; display:none; z-index:30; }}
+    .esp-events {{ display:grid; gap:0; }} .esp-event-row {{ display:grid; grid-template-columns:58px 120px minmax(0,1fr) minmax(0,2fr); gap:10px; padding:8px 0; border-bottom:1px solid #1e3040; font-size:12px; align-items:center; }} .esp-event-row:last-child {{ border-bottom:none; }} .esp-event-time {{ color:#607a88; font-family:ui-monospace,monospace; white-space:nowrap; }} .esp-event-type {{ white-space:nowrap; }} .esp-event-topic {{ color:#7a99aa; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }} .esp-event-detail {{ color:#b0c4ce; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
     @media (max-width:1100px) {{ .topbar {{ padding:0 14px; overflow-x:auto; }} main {{ padding:14px; }} .grid3,.grid2 {{ grid-template-columns:1fr; }} .tabs {{ gap:8px; }} .tabs a {{ white-space:nowrap; }} .event-row {{ grid-template-columns:1fr; gap:3px; }} .candidate-summary {{ grid-template-columns:1fr; align-items:start; }} .button.inline {{ width:100%; }} .metric-row {{ grid-template-columns:46px 1fr 80px; }} }}
   </style>
 </head>
@@ -2077,6 +2083,238 @@ def page_logs(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LANG
     return shell('logs', body, model['status'].get('updated_at', ''), lang=lang)
 
 
+# ---------------------------------------------------------------------------
+# ESP Logs page — helpers and page function
+# ---------------------------------------------------------------------------
+_ESP_EVENT_COLORS: dict[str, str] = {
+    "summary":            "#00bcd4",
+    "dropped":            "#ff9800",
+    "truncated":          "#e57c3b",
+    "suggestion":         "#ffd600",
+    "boot":               "#4caf50",
+    "busy_ether_changed": "#9c27b0",
+    "meter_snapshot":     "#009688",
+    "rx_path":            "#64b5f6",
+}
+_ESP_EVENT_ICONS: dict[str, str] = {
+    "summary":            "📊",
+    "dropped":            "⚠",
+    "truncated":          "✂",
+    "suggestion":         "💡",
+    "boot":               "🔄",
+    "busy_ether_changed": "📡",
+    "meter_snapshot":     "📸",
+    "rx_path":            "📶",
+}
+
+
+def _fmt_epoch(epoch_str: str) -> str:
+    try:
+        t = int(epoch_str)
+        if t <= 0:
+            return "-"
+        return datetime.fromtimestamp(t, tz=timezone.utc).strftime("%H:%M:%S")
+    except Exception:
+        return str(epoch_str)[:10] if epoch_str else "-"
+
+
+def _esp_event_summary(payload_str: str, evtype: str) -> str:
+    """Return a short human-readable summary of an ESP event payload."""
+    try:
+        d = json.loads(payload_str)
+    except Exception:
+        return payload_str[:80] if payload_str else ""
+    parts = []
+    key_map: dict[str, list[str]] = {
+        "summary":            ["listen_mode", "total", "ok", "dropped", "drop_pct", "avg_ok_rssi"],
+        "dropped":            ["stage", "reason", "detail", "mode"],
+        "truncated":          ["stage", "reason", "detail", "mode"],
+        "rx_path":            ["stage", "mode", "rssi"],
+        "suggestion":         ["chip", "code", "yaml_key", "suggested_value"],
+        "boot":               ["chip", "version"],
+        "busy_ether_changed": ["chip", "state", "drop_pct"],
+        "meter_snapshot":     ["trigger", "elapsed_s"],
+    }
+    keys = key_map.get(evtype, list(d.keys())[:6])
+    for k in keys:
+        v = d.get(k)
+        if v is not None and str(v) not in ("", "null"):
+            parts.append(f"{k}={v}")
+    if evtype == "meter_snapshot":
+        meters = d.get("meters", [])
+        if isinstance(meters, list):
+            parts.append(f"meters={len(meters)}")
+    text = "  ".join(str(p) for p in parts)
+    return text[:120] if text else ""
+
+
+def render_esp_events(rows: list[dict], lang: str = DEFAULT_LANG) -> str:
+    if not rows:
+        return f'<div class="empty">{esc(tr(lang, "no_events_yet"))}</div>'
+    html_parts = ['<div class="esp-events">']
+    for row in rows:
+        epoch   = row.get("epoch", "")
+        evtype  = row.get("evtype", "unknown")
+        topic   = row.get("topic", "")
+        payload = row.get("payload", "")
+        color   = _ESP_EVENT_COLORS.get(evtype, "#607a88")
+        icon    = _ESP_EVENT_ICONS.get(evtype, "·")
+        time_str = _fmt_epoch(epoch)
+        parts = topic.split("/")
+        short_topic = "/".join(parts[-3:]) if len(parts) > 3 else topic
+        summary = _esp_event_summary(payload, evtype)
+        html_parts.append(
+            f'<div class="esp-event-row">'
+            f'<span class="esp-event-time">{esc(time_str)}</span>'
+            f'<span class="esp-event-type" style="color:{color};font-weight:700;">{icon} {esc(evtype)}</span>'
+            f'<span class="esp-event-topic">{esc(short_topic)}</span>'
+            f'<span class="esp-event-detail">{esc(summary)}</span>'
+            f'</div>'
+        )
+    html_parts.append('</div>')
+    return "".join(html_parts)
+
+
+def render_esp_diag_panel(diag: dict, lang: str = DEFAULT_LANG) -> str:
+    if not diag:
+        return ""
+    import time as _time
+    rx_epoch = safe_int(diag.get("_bridge_rx_epoch", 0))
+    age_s = int(_time.time() - rx_epoch) if rx_epoch > 0 else -1
+    age_str = f"{age_s}s ago" if age_s >= 0 else ""
+    rows = []
+    for key in ("listen_mode", "uptime_ms", "total", "ok", "dropped", "truncated",
+                "drop_pct", "avg_ok_rssi", "busy_ether_state"):
+        v = diag.get(key)
+        if v is not None and str(v) not in ("", "null"):
+            rows.append(f'<span>{esc(key)}</span><span>{esc(str(v))}</span>')
+    if not rows:
+        return ""
+    hint_en = diag.get("hint_en", "")
+    hint_html = (
+        f'<div style="margin-top:8px;padding:6px 10px;background:#0e1f2b;'
+        f'border-left:3px solid #00bcd4;font-size:11px;color:#b0c4ce;">💡 {esc(hint_en)}</div>'
+    ) if hint_en else ""
+    return (
+        f'<section class="card" style="margin-top:14px;">'
+        f'<div class="section-head"><h2>{esc(tr(lang, "esp_diag_title"))}</h2>'
+        f'{"<span style=\"font-size:11px;color:#607a88;\">" + esc(age_str) + "</span>" if age_str else ""}'
+        f'</div>'
+        f'<div class="discovery-kv">{"".join(rows)}</div>'
+        f'{hint_html}'
+        f'</section>'
+    )
+
+
+def render_esp_suggestion_panel(suggestion: dict, lang: str = DEFAULT_LANG) -> str:
+    if not suggestion:
+        return ""
+    rows = []
+    for key in ("chip", "code", "yaml_key", "suggested_value"):
+        v = suggestion.get(key)
+        if v is not None and str(v) not in ("", "null"):
+            rows.append(
+                f'<span>{esc(key)}</span>'
+                f'<span style="font-weight:700;color:#ffd600;">{esc(str(v))}</span>'
+            )
+    hint_en = suggestion.get("hint_en", "")
+    if hint_en:
+        rows.append(f'<span>hint</span><span>{esc(hint_en)}</span>')
+    if not rows:
+        return ""
+    snippet = suggestion.get("yaml_snippet", "")
+    snippet_html = (
+        f'<div class="codebox" style="margin-top:10px;border-left:3px solid #ffd600;">'
+        f'{esc(snippet)}</div>'
+    ) if snippet else ""
+    return (
+        f'<section class="card" style="margin-top:14px;border-left:4px solid #ffd600;">'
+        f'<div class="section-head"><h2 style="color:#ffd600;">💡 {esc(tr(lang, "esp_suggestion_title"))}</h2></div>'
+        f'<div class="discovery-kv">{"".join(rows)}</div>'
+        f'{snippet_html}'
+        f'</section>'
+    )
+
+
+def render_esp_boot_panel(boot: dict, lang: str = DEFAULT_LANG) -> str:
+    if not boot:
+        return ""
+    rows = []
+    for key in ("chip", "version", "uptime_ms"):
+        v = boot.get(key)
+        if v is not None and str(v) not in ("", "null"):
+            rows.append(f'<span>{esc(key)}</span><span>{esc(str(v))}</span>')
+    rx_epoch = safe_int(boot.get("_bridge_rx_epoch", 0))
+    if rx_epoch > 0:
+        rows.append(
+            f'<span>received_at</span>'
+            f'<span>{esc(_fmt_epoch(str(rx_epoch)))}</span>'
+        )
+    if not rows:
+        return ""
+    return (
+        f'<section class="card" style="margin-top:14px;">'
+        f'<div class="section-head"><h2>🔄 {esc(tr(lang, "esp_boot_title"))}</h2></div>'
+        f'<div class="discovery-kv">{"".join(rows)}</div>'
+        f'</section>'
+    )
+
+
+def page_esp_logs(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LANG) -> str:
+    model = status_model(data)
+    esp_diag       = read_json(STATUS_ESP_DIAG_JSON)
+    esp_suggestion = read_json(STATUS_ESP_SUGGESTION_FILE)
+    esp_boot       = read_json(STATUS_ESP_BOOT_FILE)
+    esp_events     = read_tsv(
+        STATUS_ESP_EVENTS_FILE,
+        ["epoch", "evtype", "topic", "payload"],
+        limit=100,
+        reverse=True,
+    )
+    has_data = bool(esp_diag or esp_suggestion or esp_boot or esp_events)
+
+    no_data_html = ""
+    if not has_data:
+        no_data_html = (
+            f'<section class="card" style="margin-top:18px;border-left:4px solid #1a3344;">'
+            f'<h2 style="color:#607a88;">ℹ {esc(tr(lang, "esp_logs_no_data"))}</h2>'
+            f'<p style="color:#4d6875;font-size:12px;margin-top:8px;">'
+            f'{esc(tr(lang, "esp_logs_enable_hint"))}</p>'
+            f'<div class="codebox" style="margin-top:12px;font-size:11px;color:#7a99aa;">'
+            f'wmbus/&lt;chip_id&gt;/diag                 — dropped / truncated / rx_path events\n'
+            f'wmbus/&lt;chip_id&gt;/diag/summary          — 60 s summary (total / ok / dropped / drop_pct)\n'
+            f'wmbus/&lt;chip_id&gt;/diag/suggestion        — tuning suggestions\n'
+            f'wmbus/&lt;chip_id&gt;/diag/boot              — startup info (retained)\n'
+            f'wmbus/&lt;chip_id&gt;/diag/busy_ether_changed — adaptive mode changes'
+            f'</div>'
+            f'</section>'
+        )
+
+    events_html = ""
+    if has_data or esp_events:
+        events_html = (
+            f'<section class="card" style="margin-top:14px;">'
+            f'<div class="section-head">'
+            f'<h2>{esc(tr(lang, "esp_events_title"))}</h2>'
+            f'<span style="font-size:11px;color:#607a88;">'
+            f'{len(esp_events)} event{"s" if len(esp_events) != 1 else ""}'
+            f'</span></div>'
+            f'{render_esp_events(esp_events, lang)}'
+            f'</section>'
+        )
+
+    body = (
+        f'<h1>{esc(tr(lang, "esp_logs_title"))}</h1>'
+        f'<div class="sub">{esc(tr(lang, "esp_logs_sub"))}</div>'
+        f'{no_data_html}'
+        f'{render_esp_suggestion_panel(esp_suggestion, lang)}'
+        f'{render_esp_diag_panel(esp_diag, lang)}'
+        f'{render_esp_boot_panel(esp_boot, lang)}'
+        f'{events_html}'
+    )
+    return shell('esp-logs', body, model['status'].get('updated_at', ''), lang=lang)
+
+
 def page_settings(data: dict, params: dict[str, list[str]], lang: str = DEFAULT_LANG) -> str:
     model = status_model(data)
     cfg   = model['cfg']
@@ -2147,6 +2385,7 @@ def render_page(path: str, params: dict[str, list[str]], lang: str = DEFAULT_LAN
     if path in {'/search', '/search-discover'}: return page_search(data, params, lang)
     if path == '/candidate': return page_candidate(data, params, lang)
     if path == '/logs': return page_logs(data, params, lang)
+    if path == '/esp-logs': return page_esp_logs(data, params, lang)
     if path == '/settings': return page_settings(data, params, lang)
     if path == '/about': return page_about(data, params, lang)
     return page_dashboard(data, params, lang)
@@ -2185,7 +2424,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route_path(self, raw_path: str) -> str:
         path = raw_path.rstrip('/') or '/'
-        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter'}
+        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/esp-logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter'}
         if path not in known and not path.endswith('/api/status') and not path.endswith('/healthz'):
             last = '/' + path.rsplit('/', 1)[-1]
             if last in known:
@@ -2248,7 +2487,7 @@ class Handler(BaseHTTPRequestHandler):
         lang = detect_lang(self.headers, params)
         self._wmbus_lang = lang
         path = self._route_path(parsed.path)
-        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter'}
+        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/esp-logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter'}
 
         if path.endswith('/api/status'):
             self._send(200, json.dumps(state(), ensure_ascii=False, indent=2).encode('utf-8'), 'application/json; charset=utf-8')

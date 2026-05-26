@@ -563,6 +563,53 @@ STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
   done
 ) &
 
+# Background subscriber for all ESP diagnostic events.
+# Subscribes to bare diag topic (dropped/truncated/rx_path) and all subtopics.
+# Writes TSV: epoch<TAB>evtype<TAB>topic<TAB>payload  (rolling 200 lines).
+# Extracts suggestion and boot events to their own JSON files for webui detail panels.
+STATUS_ESP_EVENTS_FILE="${BASE}/status_esp_events.tsv"
+STATUS_ESP_SUGGESTION_FILE="${BASE}/status_esp_suggestion.json"
+STATUS_ESP_BOOT_FILE="${BASE}/status_esp_boot.json"
+touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+(
+  _n=0
+  while true; do
+    while IFS=$'\t' read -r _etopic _epayload; do
+      [[ -n "${_etopic}" ]] || continue
+      [[ -n "${_epayload}" ]] || continue
+      _ets="$(date +%s 2>/dev/null || echo 0)"
+      _evtype="$(printf '%s\n' "${_epayload}" | jq -r '.event // "unknown"' 2>/dev/null || echo "unknown")"
+      [[ -n "${_evtype}" && "${_evtype}" != "null" ]] || _evtype="unknown"
+      printf '%s\t%s\t%s\t%s\n' "${_ets}" "${_evtype}" "${_etopic}" "${_epayload}" \
+        >> "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+      _n=$(( _n + 1 ))
+      if (( _n % 50 == 0 )); then
+        tail -n 200 "${STATUS_ESP_EVENTS_FILE}" > "${STATUS_ESP_EVENTS_FILE}.tmp" 2>/dev/null \
+          && mv "${STATUS_ESP_EVENTS_FILE}.tmp" "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
+      fi
+      if [[ "${_evtype}" == "suggestion" ]]; then
+        printf '%s\n' "${_epayload}" \
+          | jq --argjson t "${_ets}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \
+          > "${STATUS_ESP_SUGGESTION_FILE}.tmp" \
+          && mv "${STATUS_ESP_SUGGESTION_FILE}.tmp" "${STATUS_ESP_SUGGESTION_FILE}" 2>/dev/null \
+          || true
+      fi
+      if [[ "${_evtype}" == "boot" ]]; then
+        printf '%s\n' "${_epayload}" \
+          | jq --argjson t "${_ets}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \
+          > "${STATUS_ESP_BOOT_FILE}.tmp" \
+          && mv "${STATUS_ESP_BOOT_FILE}.tmp" "${STATUS_ESP_BOOT_FILE}" 2>/dev/null \
+          || true
+      fi
+    done < <(
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" \
+        -t "wmbus/+/diag" -t "wmbus/+/diag/#" \
+        -F '%t\t%p' -W 180 2>/dev/null
+    )
+    sleep 5
+  done
+) &
+
 mqtt_pub() {
   local topic="$1"
   local payload="$2"
