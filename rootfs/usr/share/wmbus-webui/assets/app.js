@@ -253,7 +253,9 @@
       state.liveConnected = true;
       scheduleRender();
     };
-    liveSource.onmessage = (event) => {
+    // Server sends named SSE events: "event: state\ndata: ...\n\n"
+    // onmessage only fires for unnamed events — must use addEventListener("state").
+    liveSource.addEventListener("state", (event) => {
       try {
         applyData(JSON.parse(event.data));
         state.loading = false;
@@ -262,7 +264,7 @@
       } catch (error) {
         state.liveConnected = false;
       }
-    };
+    });
     liveSource.onerror = () => {
       state.liveConnected = false;
     };
