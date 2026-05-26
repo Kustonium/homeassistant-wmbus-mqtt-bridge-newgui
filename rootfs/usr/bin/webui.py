@@ -2555,7 +2555,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
-        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/esp-logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter', '/legacy'}
+        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/esp-logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter'}
         if path not in known and not path.endswith('/api/app') and not path.endswith('/api/status') and not path.endswith('/healthz'):
             last = '/' + path.rsplit('/', 1)[-1]
             if last in known:
@@ -2690,9 +2690,6 @@ class Handler(BaseHTTPRequestHandler):
             candidate = next((c for c in all_data['candidates'] if c.get('id') == mid), None)
             payload = json.dumps(candidate_config(candidate or {'id': mid}), ensure_ascii=False, indent=2)
             self._send(200, payload.encode('utf-8'), 'application/json; charset=utf-8')
-            return
-        if path == '/legacy':
-            self._send(200, render_page('/', params, lang).encode('utf-8'), 'text/html; charset=utf-8')
             return
         if path in known:
             if self._send_static_index():
