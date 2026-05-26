@@ -1,0 +1,939 @@
+(() => {
+  const app = document.getElementById("app");
+
+  const navItems = [
+    ["dashboard", "nav_dashboard", "DB"],
+    ["meters", "nav_meters", "MT"],
+    ["discover", "nav_discover", "DS"],
+    ["search", "nav_search", "SR"],
+    ["logs", "nav_logs", "LG"],
+    ["esp-logs", "nav_esp_logs", "EL"],
+    ["settings", "nav_settings", "ST"],
+    ["about", "nav_about", "AB"],
+  ];
+
+  const textAliases = {
+    webui_language: "show",
+    webui_restart: "restart_addon",
+    webui_updated: "updated_label",
+    webui_online: "online_label",
+    webui_raw_input: "raw_telegrams_received",
+    webui_recent_meters: "configured_meters",
+    webui_top_candidates: "best_candidate",
+    webui_no_meters: "no_configured_meters_yet",
+    webui_no_candidates: "no_candidates_yet",
+    webui_no_events: "no_events_yet",
+    webui_id: "id_label",
+    webui_name: "meter_name_label",
+    webui_value: "value_label",
+    webui_last_seen: "last_telegram",
+    webui_add: "add_meter",
+    webui_remove: "delete",
+    webui_stop: "save_disable_search",
+    webui_search_cache: "candidates_for_search_label",
+    webui_matches: "search_matches",
+    webui_runtime_events: "recent_events_title",
+    webui_diagnostics: "esp_diag_title",
+    webui_suggestion: "esp_suggestion_title",
+    webui_boot: "esp_boot_title",
+    webui_esp_events: "esp_events_title",
+    webui_search_mode: "search_config",
+    webui_options_snapshot: "json_preview",
+    webui_data_path: "runtime_files",
+    webui_add_meter: "add_meter",
+    webui_meter_name: "meter_name_label",
+    webui_aes_key: "aes_key_label",
+    webui_cancel: "cancel_label",
+  };
+
+  const state = {
+    route: currentRoute(),
+    data: null,
+    loading: true,
+    error: "",
+    modal: null,
+    toast: null,
+    liveConnected: false,
+  };
+
+  let liveSource = null;
+  let liveLang = "";
+
+  function currentRoute() {
+    const hash = window.location.hash.replace(/^#\/?/, "");
+    const route = hash.split("?")[0].trim();
+    return route || "dashboard";
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
+  }
+
+  function t(key, fallback = key, replacements = {}) {
+    const dict = state.data?.i18n?.text || {};
+    const text = dict[key] || dict[textAliases[key]] || fallback;
+    return Object.entries(replacements).reduce(
+      (acc, [name, value]) => acc.replaceAll(`{${name}}`, String(value)),
+      text,
+    );
+  }
+
+  function asArray(value) {
+    return Array.isArray(value) ? value : [];
+  }
+
+  function number(value) {
+    const parsed = Number.parseInt(value ?? 0, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function fmtTime(value) {
+    if (!value) return "-";
+    const text = String(value);
+    const date = new Date(text);
+    if (Number.isNaN(date.getTime())) return escapeHtml(text);
+    return date.toLocaleString(undefined, {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+  function pill(ok, label) {
+    const cls = ok ? "ok" : "bad";
+    return `<span class="pill ${cls}"><span class="dot"></span>${escapeHtml(label)}</span>`;
+  }
+
+  function levelPill(level) {
+    const raw = String(level || "info").toLowerCase();
+    const cls = raw.includes("error") ? "bad" : raw.includes("warn") ? "warn" : "ok";
+    return `<span class="pill ${cls}"><span class="dot"></span>${escapeHtml(raw)}</span>`;
+  }
+
+  function toast(message, isError = false) {
+    state.toast = {message, isError};
+    render();
+    window.clearTimeout(toast.timer);
+    toast.timer = window.setTimeout(() => {
+      state.toast = null;
+      render();
+    }, 4800);
+  }
+
+  function currentLang() {
+    return state.data?.i18n?.lang || liveLang || "";
+  }
+
+  function applyData(payload) {
+    const previousI18n = state.data?.i18n;
+    state.data = {...(state.data || {}), ...(payload || {})};
+    if (!payload?.i18n && previousI18n) {
+      state.data.i18n = previousI18n;
+    }
+    state.error = "";
+  }
+
+  async function fetchData(lang = "") {
+    try {
+      const url = lang ? `api/app?lang=${encodeURIComponent(lang)}` : "api/app";
+      const response = await fetch(url, {cache: "no-store"});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      applyData(await response.json());
+      startLiveUpdates(state.data?.i18n?.lang || lang || currentLang());
+    } catch (error) {
+      state.error = `Cannot load dashboard data: ${error.message}`;
+    } finally {
+      state.loading = false;
+      render();
+    }
+  }
+
+  async function postApi(endpoint, payload) {
+    const response = await fetch(`api/${endpoint}`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(payload || {}),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) {
+      throw new Error(result.message || `HTTP ${response.status}`);
+    }
+    return result;
+  }
+
+  function startLiveUpdates(lang = "") {
+    if (!window.EventSource) {
+      state.liveConnected = false;
+      return;
+    }
+    const nextLang = lang || currentLang();
+    if (liveSource && liveLang === nextLang) return;
+    if (liveSource) {
+      liveSource.close();
+      liveSource = null;
+    }
+    liveLang = nextLang;
+    const url = nextLang ? `api/events?lang=${encodeURIComponent(nextLang)}` : "api/events";
+    liveSource = new EventSource(url);
+    liveSource.onopen = () => {
+      state.liveConnected = true;
+      render();
+    };
+    liveSource.onmessage = (event) => {
+      try {
+        applyData(JSON.parse(event.data));
+        state.loading = false;
+        state.liveConnected = true;
+        render();
+      } catch (error) {
+        state.liveConnected = false;
+      }
+    };
+    liveSource.onerror = () => {
+      state.liveConnected = false;
+    };
+  }
+
+  function routeTitle(route) {
+    const item = navItems.find(([id]) => id === route);
+    return item ? t(item[1], item[0]) : t("dashboard_title", "Dashboard");
+  }
+
+  function navHtml(mobile = false) {
+    const cls = mobile ? "mobile-nav" : "nav";
+    return `<nav class="${cls}">${navItems
+      .map(([id, key, mark]) => {
+        const active = id === state.route ? " active" : "";
+        const icon = mobile ? "" : `<span class="nav-ico">${mark}</span>`;
+        return `<a class="${active}" href="#/${id}">${icon}<span>${escapeHtml(t(key, id))}</span></a>`;
+      })
+      .join("")}</nav>`;
+  }
+
+  function languageSelect() {
+    const i18n = state.data?.i18n || {};
+    const current = i18n.lang || "en";
+    const labels = i18n.labels || {};
+    const supported = asArray(i18n.supported).length ? i18n.supported : ["en", "pl", "de", "cs", "sk"];
+    return `
+      <div class="lang-menu">
+        <button class="lang-button" type="button" data-action="toggle-language" aria-label="${escapeHtml(t("webui_language", "Language"))}">
+          <span class="flag flag-${escapeHtml(current)}"></span>
+          <span>${escapeHtml(labels[current] || current.toUpperCase())}</span>
+        </button>
+        <div class="lang-options" hidden>
+          ${supported
+            .map(
+              (lang) => `
+                <button class="${lang === current ? "active" : ""}" type="button" data-action="language" data-lang="${escapeHtml(lang)}">
+                  <span class="flag flag-${escapeHtml(lang)}"></span>
+                  <span>${escapeHtml(labels[lang] || lang)}</span>
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+      </div>
+    `;
+  }
+
+  function shell(content) {
+    const data = state.data || {};
+    const meta = data.meta || {};
+    const model = data.model || {};
+    const title = routeTitle(state.route);
+    const updatedAt = model.status?.updated_at || data.status?.updated_at || "";
+    const runtime =
+      meta.runtime === "home_assistant"
+        ? t("webui_runtime_home_assistant", "Home Assistant")
+        : t("webui_runtime_docker", "Docker");
+    const dev = meta.is_dev ? '<span class="pill warn">DEV</span>' : "";
+
+    return `
+      <div class="app-shell">
+        <aside class="sidebar">
+          <div class="brand">
+            <div class="brand-mark">WB</div>
+            <div>
+              <div class="brand-title">wMBus MQTT Bridge</div>
+              <div class="brand-sub">v${escapeHtml(meta.version || "dev")} ${dev}</div>
+            </div>
+          </div>
+          ${navHtml(false)}
+          <div class="sidebar-foot">
+            <span>${escapeHtml(runtime)}</span>
+            <a class="btn ghost" href="legacy">${escapeHtml(t("webui_legacy", "Legacy UI"))}</a>
+          </div>
+        </aside>
+        <main class="main">
+          ${navHtml(true)}
+          <header class="topbar">
+            <div class="top-title">
+              <h1>${escapeHtml(title)}</h1>
+              <p>${escapeHtml(t("webui_updated", "Updated"))} ${fmtTime(updatedAt)}</p>
+            </div>
+            <div class="top-actions">
+              ${languageSelect()}
+              <span class="pill ${state.liveConnected ? "ok" : "muted"}"><span class="dot"></span>${state.liveConnected ? "LIVE" : "POLL"}</span>
+              <button class="btn" data-action="refresh">${escapeHtml(t("webui_refresh", "Refresh"))}</button>
+              <button class="btn danger" data-action="restart">${escapeHtml(t("webui_restart", "Restart"))}</button>
+            </div>
+          </header>
+          <div class="content">
+            ${state.error ? `<div class="empty">${escapeHtml(state.error)}</div>` : content}
+          </div>
+        </main>
+      </div>
+      ${state.modal ? renderModal() : ""}
+      ${state.toast ? `<div class="toast ${state.toast.isError ? "error" : ""}">${escapeHtml(state.toast.message)}</div>` : ""}
+    `;
+  }
+
+  function metric(label, value, sub) {
+    return `
+      <div class="card metric">
+        <span class="label">${escapeHtml(label)}</span>
+        <span class="value">${escapeHtml(value)}</span>
+        <span class="sub">${escapeHtml(sub || "")}</span>
+      </div>
+    `;
+  }
+
+  function statusCard(title, ok, detail) {
+    return `
+      <div class="card status-card">
+        ${pill(ok, ok ? t("webui_online", "Online") : t("webui_attention", "Attention"))}
+        <strong>${escapeHtml(title)}</strong>
+        <span>${escapeHtml(detail || "")}</span>
+      </div>
+    `;
+  }
+
+  function statsPanel(model) {
+    const current = Number(model.rate_current_min || 0);
+    const previous = Number(model.rate_prev_min || 0);
+    const trend = current - previous;
+    const trendClass = trend > 0 ? "up" : trend < 0 ? "down" : "flat";
+    const trendMark = trend > 0 ? "↑" : trend < 0 ? "↓" : "→";
+    const maxValue = Math.max(Number(model.candidate_count || 0), Number(model.meter_count || 0), Number(model.raw_per_min || 0), 1);
+
+    return `
+      <section class="section">
+        <div class="card stats-panel">
+          <div class="section-head">
+            <h2>${escapeHtml(t("statistics", "Statistics"))}</h2>
+          </div>
+          <div class="stats-live">
+            <div>
+              <span>${escapeHtml(t("rate_current_min_label", "Current minute"))}</span>
+              <strong>${escapeHtml(current)}</strong>
+              <small>${escapeHtml(t("rate_tel_min", "tel / min"))}</small>
+            </div>
+            <div>
+              <span>${escapeHtml(t("rate_prev_min_label", "Previous minute"))}</span>
+              <strong>${escapeHtml(previous)}</strong>
+              <small>${escapeHtml(t("rate_tel_min", "tel / min"))}</small>
+            </div>
+            <div class="trend ${trendClass}">
+              <span>${escapeHtml(t("rate_trend_label", "Trend"))}</span>
+              <strong>${trendMark}</strong>
+              <small>${trend > 0 ? "+" : ""}${escapeHtml(trend)} ${escapeHtml(t("rate_vs_prev", "vs previous"))}</small>
+            </div>
+          </div>
+          <div class="stats-bars">
+            ${statsRow("candidate", t("detected_candidates", "Detected candidates"), model.candidate_count || 0, model.candidate_count || 0, maxValue)}
+            ${statsRow("meter", t("configured_meters", "Configured meters"), model.meter_count || 0, model.meter_count || 0, maxValue)}
+            ${statsRow("rate", t("telegrams_per_min_metric", "Telegrams / min"), model.raw_per_min || 0, model.raw_per_min || 0, maxValue, t("rate_session_avg_label", "60 min avg"))}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  function statsRow(type, label, value, barValue, maxValue, suffix = "") {
+    const numeric = Number(barValue || 0);
+    const pct = numeric > 0 ? Math.max(3, Math.min(100, Math.round((numeric / maxValue) * 100))) : 1;
+    return `
+      <div class="stats-row ${type}">
+        <span class="stats-icon"></span>
+        <div class="stats-label">
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(value)}</strong>
+        </div>
+        <div class="stats-track"><span style="width:${pct}%"></span></div>
+        ${suffix ? `<small>${escapeHtml(suffix)}</small>` : ""}
+      </div>
+    `;
+  }
+
+  function dashboard() {
+    const data = state.data || {};
+    const model = data.model || {};
+    const pipe = model.pipe || {};
+    const mqtt = model.mqtt || {};
+    const recentMeters = asArray(data.meters).slice(0, 6);
+    const recentCandidates = asArray(data.candidates).slice(0, 6);
+
+    return `
+      <section class="section">
+        <div class="status-row">
+          ${statusCard("MQTT", !!model.mqtt_ok, mqtt.host ? `${mqtt.host}:${mqtt.port || ""}` : t("webui_mqtt_detail", "Broker connection"))}
+          ${statusCard(t("webui_raw_input", "Raw input"), !!model.raw_ok, `${number(pipe.raw_count)} ${t("raw_telegrams_metric", "telegrams")}`)}
+          ${statusCard("wmbusmeters", !!model.wmbus_ok, t("webui_wmbusmeters_detail", "Decoder process and decoded stream"))}
+          ${statusCard(t("discovery_label", "Discovery"), !!model.discovery_ok, t("webui_discovery_detail", "Home Assistant MQTT discovery"))}
+        </div>
+      </section>
+
+      ${statsPanel(model)}
+
+      <section class="section grid two">
+        <div>
+          <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${recentMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
+          ${meterTable(recentMeters, false)}
+        </div>
+        <div>
+          <div class="section-head"><h2>${escapeHtml(t("webui_top_candidates", "Top candidates"))}</h2><span>${recentCandidates.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
+          ${candidateTable(recentCandidates, false)}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("recent_events_title", "Recent events"))}</h2><span>${asArray(data.events).length} ${escapeHtml(t("webui_total", "total"))}</span></div>
+        ${eventsList(asArray(data.events).slice(0, 8))}
+      </section>
+    `;
+  }
+
+  function meterTable(rows, withActions = true) {
+    if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_meters", "No meters yet."))}</div>`;
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>${escapeHtml(t("webui_id", "ID"))}</th>
+              <th>${escapeHtml(t("webui_name", "Name"))}</th>
+              <th>${escapeHtml(t("driver", "Driver"))}</th>
+              <th>${escapeHtml(t("webui_value", "Value"))}</th>
+              <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
+              <th>${escapeHtml(t("webui_seen", "Seen"))}</th>
+              ${withActions ? "<th></th>" : ""}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map((row) => {
+                const id = row.id || row.meter_id || "";
+                return `
+                  <tr>
+                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td>${escapeHtml(row.name || row.id || "-")}</td>
+                    <td>${escapeHtml(row.driver || "-")}</td>
+                    <td>${escapeHtml(row.value || "-")} <span class="mono">${escapeHtml(row.value_key || "")}</span></td>
+                    <td>${fmtTime(row.last_seen)}</td>
+                    <td>${escapeHtml(row.seen_count || "0")}</td>
+                    ${
+                      withActions
+                        ? `<td><div class="actions"><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("webui_remove", "Remove"))}</button></div></td>`
+                        : ""
+                    }
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function candidateTable(rows, withActions = true) {
+    if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_candidates", "No visible candidates."))}</div>`;
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>${escapeHtml(t("webui_id", "ID"))}</th>
+              <th>${escapeHtml(t("driver", "Driver"))}</th>
+              <th>${escapeHtml(t("webui_type", "Type"))}</th>
+              <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
+              <th>15m</th>
+              <th>60m</th>
+              ${withActions ? "<th></th>" : ""}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows
+              .map((row) => {
+                const id = row.id || "";
+                const driver = row.driver || "auto";
+                return `
+                  <tr>
+                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td>${escapeHtml(driver)}</td>
+                    <td>${escapeHtml(row.type || "-")}</td>
+                    <td>${fmtTime(row.last_seen)}</td>
+                    <td>${escapeHtml(row.seen_15m || "0")}</td>
+                    <td>${escapeHtml(row.seen_60m || "0")}</td>
+                    ${
+                      withActions
+                        ? `<td><div class="actions">
+                            <button class="btn primary" data-action="open-add" data-id="${escapeHtml(id)}" data-driver="${escapeHtml(driver)}">${escapeHtml(t("webui_add", "Add"))}</button>
+                            <button class="btn" data-action="ignore" data-id="${escapeHtml(id)}">${escapeHtml(t("ignore", "Ignore"))}</button>
+                          </div></td>`
+                        : ""
+                    }
+                  </tr>
+                `;
+              })
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function metersPage() {
+    const data = state.data || {};
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("configured_meters", "Configured meters"))}</h2>
+          <span>${asArray(data.meters).length} ${escapeHtml(t("webui_meter_rows", "meter rows"))}</span>
+        </div>
+        ${meterTable(asArray(data.meters), true)}
+      </section>
+    `;
+  }
+
+  function discoverPage() {
+    const data = state.data || {};
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
+          <span>${asArray(data.candidates).length} ${escapeHtml(t("webui_visible", "visible"))}</span>
+        </div>
+        ${candidateTable(asArray(data.candidates), true)}
+      </section>
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("ignored", "Ignored"))}</h2>
+          <span>${asArray(data.ignored).length} ${escapeHtml(t("webui_id", "ID"))}</span>
+        </div>
+        ${ignoredList(asArray(data.ignored))}
+      </section>
+    `;
+  }
+
+  function ignoredList(rows) {
+    if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_ignored", "No ignored candidates."))}</div>`;
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>${escapeHtml(t("webui_id", "ID"))}</th><th></th></tr></thead>
+          <tbody>
+            ${rows
+              .map(
+                (id) => `
+                  <tr>
+                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><button class="btn" data-action="unignore" data-id="${escapeHtml(id)}">${escapeHtml(t("restore", "Restore"))}</button></td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function searchPage() {
+    const data = state.data || {};
+    const cfg = data.search_config || {};
+    const status = data.search_status || {};
+    const active = !!cfg.search_mode || ["collecting", "search", "matched"].includes(String(status.phase || ""));
+    return `
+      <section class="section search-card card">
+        <div class="section-head">
+          <h2>${escapeHtml(t("search_config", "Search mode"))}</h2>
+          ${active ? `<span class="pill warn"><span class="dot"></span>${escapeHtml(t("active", "Active"))}</span>` : `<span class="pill muted">${escapeHtml(t("webui_idle", "Idle"))}</span>`}
+        </div>
+        <form id="search-form" class="form-grid">
+          <div class="field">
+            <label for="expected">${escapeHtml(t("expected_label", "Expected m3"))}</label>
+            <input id="expected" name="expected" inputmode="decimal" value="${escapeHtml(cfg.search_expected_value_m3 || "0")}">
+          </div>
+          <div class="field">
+            <label for="tolerance">${escapeHtml(t("tolerance_m3_label", "Tolerance m3"))}</label>
+            <input id="tolerance" name="tolerance" inputmode="decimal" value="${escapeHtml(cfg.search_tolerance_m3 || "0.05")}">
+          </div>
+          <div class="field">
+            <label>&nbsp;</label>
+            <div class="actions">
+              <button class="btn primary" type="submit" name="action" value="start">${escapeHtml(t("webui_start", "Start"))}</button>
+              <button class="btn" type="submit" name="action" value="stop">${escapeHtml(t("webui_stop", "Stop"))}</button>
+            </div>
+          </div>
+        </form>
+      </section>
+      <section class="section grid two">
+        <div>
+          <div class="section-head"><h2>${escapeHtml(t("webui_search_cache", "Search cache"))}</h2><span>${asArray(data.search_candidates).length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
+          ${simpleRows(asArray(data.search_candidates), ["id", "driver", "type"])}
+        </div>
+        <div>
+          <div class="section-head"><h2>${escapeHtml(t("webui_matches", "Matches"))}</h2><span>${asArray(data.search_matches).length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
+          ${simpleRows(asArray(data.search_matches), ["id", "driver", "value_m3", "diff_m3"])}
+        </div>
+      </section>
+    `;
+  }
+
+  function simpleRows(rows, fields) {
+    if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_rows", "No rows."))}</div>`;
+    return `
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${fields.map((field) => `<th>${escapeHtml(field)}</th>`).join("")}</tr></thead>
+          <tbody>
+            ${rows
+              .map((row) => `<tr>${fields.map((field) => `<td>${field === "id" ? `<strong>${escapeHtml(row[field] || "-")}</strong>` : escapeHtml(row[field] || "-")}</td>`).join("")}</tr>`)
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function logsPage() {
+    const data = state.data || {};
+    return `
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("webui_runtime_events", "Runtime events"))}</h2><span>${asArray(data.events).length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
+        ${eventsList(asArray(data.events))}
+      </section>
+    `;
+  }
+
+  function espLogsPage() {
+    const data = state.data || {};
+    const esp = data.esp || {};
+    const diag = esp.diag || {};
+    const suggestion = esp.suggestion || {};
+    const boot = esp.boot || {};
+    const events = asArray(esp.events);
+    return `
+      <section class="section grid two">
+        <div>
+          <div class="section-head"><h2>${escapeHtml(t("webui_diagnostics", "Diagnostics"))}</h2></div>
+          ${Object.keys(diag).length ? objectKv(diag) : `<div class="empty">${escapeHtml(t("webui_no_diagnostics", "No diagnostic summary."))}</div>`}
+        </div>
+        <div>
+          <div class="section-head"><h2>${escapeHtml(t("webui_suggestion", "Suggestion"))}</h2></div>
+          ${Object.keys(suggestion).length ? objectKv(suggestion) : `<div class="empty">${escapeHtml(t("webui_no_suggestion", "No tuning suggestion."))}</div>`}
+        </div>
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("webui_boot", "Boot"))}</h2></div>
+        ${Object.keys(boot).length ? objectKv(boot) : `<div class="empty">${escapeHtml(t("webui_no_boot", "No boot data."))}</div>`}
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2><span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
+        ${simpleRows(events, ["epoch", "evtype", "topic", "payload"])}
+      </section>
+    `;
+  }
+
+  function objectKv(obj) {
+    const entries = Object.entries(obj || {}).slice(0, 24);
+    if (!entries.length) return `<div class="empty">No data.</div>`;
+    return `
+      <div class="kv">
+        ${entries.map(([key, value]) => `<div>${escapeHtml(key)}</div><div>${escapeHtml(typeof value === "object" ? JSON.stringify(value) : value)}</div>`).join("")}
+      </div>
+    `;
+  }
+
+  function eventsList(rows) {
+    if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_events", "No events yet."))}</div>`;
+    return `
+      <div class="event-list">
+        ${rows
+          .map(
+            (row) => `
+              <div class="event-row">
+                <div>${fmtTime(row.time)}</div>
+                <div class="event-level">${escapeHtml(row.level || "info")}</div>
+                <div>${escapeHtml(row.message || "")}</div>
+              </div>
+            `,
+          )
+          .join("")}
+      </div>
+    `;
+  }
+
+  function settingsPage() {
+    const data = state.data || {};
+    const model = data.model || {};
+    const cfg = model.cfg || {};
+    const mqtt = model.mqtt || {};
+    const meta = data.meta || {};
+    return `
+      <section class="section grid two">
+        <div>
+          <div class="section-head"><h2>${escapeHtml(t("webui_runtime", "Runtime"))}</h2></div>
+          <div class="kv">
+            <div>Mode</div><div>${escapeHtml(meta.runtime || "-")}</div>
+            <div>${escapeHtml(t("webui_base_path", "Base path"))}</div><div class="mono">${escapeHtml(meta.base || "-")}</div>
+            <div>${escapeHtml(t("webui_raw_topic", "Raw topic"))}</div><div class="mono">${escapeHtml(cfg.raw_topic || "-")}</div>
+            <div>State prefix</div><div class="mono">${escapeHtml(cfg.state_prefix || "-")}</div>
+            <div>Discovery prefix</div><div class="mono">${escapeHtml(cfg.discovery_prefix || "-")}</div>
+            <div>${escapeHtml(t("webui_search_mode", "Search mode"))}</div><div>${escapeHtml(String(cfg.search_mode ?? false))}</div>
+          </div>
+        </div>
+        <div>
+          <div class="section-head"><h2>MQTT</h2></div>
+          <div class="kv">
+            <div>Connected</div><div>${escapeHtml(String(!!model.mqtt_ok))}</div>
+            <div>Host</div><div class="mono">${escapeHtml(mqtt.host || "-")}</div>
+            <div>Port</div><div class="mono">${escapeHtml(mqtt.port || "-")}</div>
+            <div>Mode</div><div>${escapeHtml(cfg.mqtt_mode || "-")}</div>
+          </div>
+        </div>
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("webui_options_snapshot", "Options snapshot"))}</h2></div>
+        <div class="code">${escapeHtml(JSON.stringify(data.options || {}, null, 2))}</div>
+      </section>
+    `;
+  }
+
+  function aboutPage() {
+    const data = state.data || {};
+    const meta = data.meta || {};
+    return `
+      <section class="section grid two">
+        <div class="card metric">
+          <span class="label">Version</span>
+          <span class="value">${escapeHtml(meta.version || "dev")}</span>
+          <span class="sub">${escapeHtml(meta.runtime || "-")}</span>
+        </div>
+        <div class="card metric">
+          <span class="label">${escapeHtml(t("webui_data_path", "Data path"))}</span>
+          <span class="value" style="font-size:18px">${escapeHtml(meta.base || "-")}</span>
+          <span class="sub">Runtime files used by the dashboard</span>
+        </div>
+      </section>
+      <section class="section">
+        <div class="section-head"><h2>${escapeHtml(t("webui_pipeline", "Pipeline"))}</h2></div>
+        <div class="code">ESP32 / Gateway / Bridge
+-> MQTT raw HEX
+-> wmbusmeters stdin:hex
+-> MQTT decoded JSON
+-> Home Assistant Discovery</div>
+      </section>
+    `;
+  }
+
+  function renderModal() {
+    const modal = state.modal || {};
+    return `
+      <div class="modal-backdrop">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-meter-title">
+          <div class="modal-head">
+            <h2 id="add-meter-title">${escapeHtml(t("webui_add_meter", "Add meter"))}</h2>
+          </div>
+          <form id="add-meter-form">
+            <div class="modal-body">
+              <div class="form-grid" style="grid-template-columns:1fr">
+                <div class="field">
+                  <label for="meter-id">${escapeHtml(t("meter_id", "Meter ID"))}</label>
+                  <input id="meter-id" name="meter_id" value="${escapeHtml(modal.id || "")}" required pattern="[0-9A-Fa-f]{8}">
+                </div>
+                <div class="field">
+                  <label for="meter-name">${escapeHtml(t("webui_meter_name", "Name"))}</label>
+                  <input id="meter-name" name="meter_name" value="${escapeHtml(modal.name || "")}">
+                </div>
+                <div class="field">
+                  <label for="meter-driver">${escapeHtml(t("driver", "Driver"))}</label>
+                  <input id="meter-driver" name="driver" value="${escapeHtml(modal.driver || "auto")}">
+                </div>
+                <div class="field">
+                  <label for="meter-key">${escapeHtml(t("webui_aes_key", "AES key"))}</label>
+                  <input id="meter-key" name="key" autocomplete="off" value="">
+                </div>
+              </div>
+            </div>
+            <div class="modal-actions">
+              <button class="btn" type="button" data-action="close-modal">${escapeHtml(t("webui_cancel", "Cancel"))}</button>
+              <button class="btn primary" type="submit">${escapeHtml(t("webui_add", "Add"))}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderRoute() {
+    if (state.loading && !state.data) {
+      return `
+        <div class="boot">
+          <div class="boot-mark"></div>
+          <div><strong>wMBus MQTT Bridge</strong><span>${escapeHtml(t("webui_loading", "Loading dashboard..."))}</span></div>
+        </div>
+      `;
+    }
+    switch (state.route) {
+      case "meters":
+        return shell(metersPage());
+      case "discover":
+        return shell(discoverPage());
+      case "search":
+        return shell(searchPage());
+      case "logs":
+        return shell(logsPage());
+      case "esp-logs":
+        return shell(espLogsPage());
+      case "settings":
+        return shell(settingsPage());
+      case "about":
+        return shell(aboutPage());
+      default:
+        return shell(dashboard());
+    }
+  }
+
+  function render() {
+    app.innerHTML = renderRoute();
+  }
+
+  document.addEventListener("click", async (event) => {
+    const target = event.target.closest("[data-action]");
+    if (!target) return;
+    const action = target.dataset.action;
+
+    if (action === "refresh") {
+      await fetchData(currentLang());
+      toast(t("webui_dashboard_refreshed", "Dashboard refreshed."));
+      return;
+    }
+
+    if (action === "toggle-language") {
+      const menu = target.closest(".lang-menu")?.querySelector(".lang-options");
+      if (menu) menu.hidden = !menu.hidden;
+      return;
+    }
+
+    if (action === "language") {
+      const lang = target.dataset.lang || "";
+      const menu = target.closest(".lang-options");
+      if (menu) menu.hidden = true;
+      if (liveSource) {
+        liveSource.close();
+        liveSource = null;
+      }
+      if (lang) await fetchData(lang);
+      return;
+    }
+
+    if (action === "open-add") {
+      state.modal = {id: target.dataset.id || "", driver: target.dataset.driver || "auto"};
+      render();
+      return;
+    }
+
+    if (action === "close-modal") {
+      if (event.target.classList.contains("modal-backdrop") || target.dataset.action === "close-modal") {
+        state.modal = null;
+        render();
+      }
+      return;
+    }
+
+    if (action === "remove-meter") {
+      const id = target.dataset.id || "";
+      if (!id || !window.confirm(t("webui_remove_confirm", "Remove meter {id}?", {id}))) return;
+      try {
+        const result = await postApi("remove-meter", {meter_id: id});
+        toast(result.message || t("webui_meter_removed", "Meter removed."));
+        await fetchData(currentLang());
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "ignore" || action === "unignore") {
+      try {
+        const result = await postApi(action, {id: target.dataset.id || ""});
+        toast(result.message || t("webui_updated_ok", "Updated."));
+        await fetchData(currentLang());
+      } catch (error) {
+        toast(error.message, true);
+      }
+      return;
+    }
+
+    if (action === "restart") {
+      if (!window.confirm(t("webui_restart_confirm", "Restart the Home Assistant add-on?"))) return;
+      try {
+        const result = await postApi("restart-bridge", {});
+        toast(result.message || "Restart requested.");
+      } catch (error) {
+        toast(error.message, true);
+      }
+    }
+  });
+
+  document.addEventListener("submit", async (event) => {
+    if (event.target.id === "add-meter-form") {
+      event.preventDefault();
+      const form = new FormData(event.target);
+      try {
+        const result = await postApi("add-meter", Object.fromEntries(form.entries()));
+        state.modal = null;
+        toast(result.message || t("webui_meter_added", "Meter added."));
+        await fetchData(currentLang());
+      } catch (error) {
+        toast(error.message, true);
+      }
+    }
+
+    if (event.target.id === "search-form") {
+      event.preventDefault();
+      const submitter = event.submitter;
+      const form = new FormData(event.target);
+      form.set("action", submitter?.value || "start");
+      try {
+        const result = await postApi("search-control", Object.fromEntries(form.entries()));
+        const restartText = result.restart_ok ? ` ${result.restart_message || ""}` : "";
+        toast(`${result.message || "Search updated."}${restartText}`);
+        await fetchData(currentLang());
+      } catch (error) {
+        toast(error.message, true);
+      }
+    }
+  });
+
+  window.addEventListener("hashchange", () => {
+    state.route = currentRoute();
+    render();
+  });
+
+  fetchData();
+  window.setInterval(() => {
+    if (!document.hidden && !state.liveConnected) fetchData(currentLang());
+  }, 15000);
+})();

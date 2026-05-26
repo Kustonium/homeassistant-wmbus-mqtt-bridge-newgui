@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import json
+import mimetypes
 import os
 import re
 from datetime import datetime, timezone, timedelta
@@ -22,6 +23,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 BASE = Path(os.environ.get("WMBUS_BASE", "/data"))
 PORT = int(os.environ.get("WEBUI_PORT", "8099"))
+STATIC_DIR = Path(__file__).resolve().parent.parent / "share" / "wmbus-webui"
 
 STATUS_JSON = BASE / "status.json"
 METERS_TSV = BASE / "status_meters.tsv"
@@ -88,7 +90,7 @@ MEDIA_FILTERS = {"all", "water", "warm_water", "electricity", "heat", "other"}
 # Localisation — all translations and helpers live in i18n.py
 # ---------------------------------------------------------------------------
 from i18n import (  # noqa: E402
-    SUPPORTED_LANGS, DEFAULT_LANG, LANG_COOKIE,
+    SUPPORTED_LANGS, DEFAULT_LANG, LANG_COOKIE, I18N,
     tr, localize_html, lang_switcher, detect_lang,
 )
 
@@ -2400,6 +2402,41 @@ def render_page(path: str, params: dict[str, list[str]], lang: str = DEFAULT_LAN
     return page_dashboard(data, params, lang)
 
 
+def frontend_payload(lang: str = DEFAULT_LANG, include_i18n: bool = True) -> dict:
+    """Return the data contract used by the static WebGUI."""
+    data = state()
+    lang = lang if lang in SUPPORTED_LANGS else DEFAULT_LANG
+    payload = {
+        "meta": {
+            "version": ADDON_VERSION,
+            "is_dev": ADDON_IS_DEV,
+            "runtime": "home_assistant" if os.environ.get("SUPERVISOR_TOKEN") else "docker",
+            "base": str(BASE),
+        },
+        "model": status_model(data),
+        "search_config": search_config_model(data),
+        "esp": {
+            "diag": read_json(STATUS_ESP_DIAG_JSON),
+            "suggestion": read_json(STATUS_ESP_SUGGESTION_FILE),
+            "boot": read_json(STATUS_ESP_BOOT_FILE),
+            "events": read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True),
+        },
+        **data,
+    }
+    if include_i18n:
+        text = {
+            **I18N.get(DEFAULT_LANG, {}),
+            **I18N.get(lang, {}),
+        }
+        payload["i18n"] = {
+            "lang": lang,
+            "supported": sorted(SUPPORTED_LANGS),
+            "labels": {"en": "English", "pl": "Polski", "de": "Deutsch", "cs": "Česky", "sk": "Slovenčina"},
+            "text": text,
+        }
+    return payload
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         return
@@ -2413,6 +2450,65 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Set-Cookie', f'{LANG_COOKIE}={lang}; Path=/; SameSite=Lax')
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_json(self, status: int, payload: dict) -> None:
+        self._send(status, json.dumps(payload, ensure_ascii=True, indent=2).encode("utf-8"), "application/json; charset=utf-8")
+
+    def _send_event_stream(self, lang: str) -> None:
+        import time as _time
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("X-Accel-Buffering", "no")
+        if lang in SUPPORTED_LANGS:
+            self.send_header("Set-Cookie", f"{LANG_COOKIE}={lang}; Path=/; SameSite=Lax")
+        self.end_headers()
+
+        last_body = ""
+        last_write = 0.0
+        while True:
+            try:
+                body = json.dumps(frontend_payload(lang, include_i18n=False), ensure_ascii=True, separators=(",", ":"))
+                now = _time.time()
+                if body != last_body:
+                    self.wfile.write(f"event: state\ndata: {body}\n\n".encode("utf-8"))
+                    self.wfile.flush()
+                    last_body = body
+                    last_write = now
+                elif now - last_write >= 25:
+                    self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
+                    last_write = now
+                _time.sleep(2)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+
+    def _send_static_index(self) -> bool:
+        index_path = STATIC_DIR / "index.html"
+        if not index_path.is_file():
+            return False
+        self._send(200, index_path.read_bytes(), "text/html; charset=utf-8")
+        return True
+
+    def _send_static_asset(self, raw_path: str) -> bool:
+        marker = "/assets/"
+        if marker not in raw_path:
+            return False
+        asset_name = raw_path.rsplit(marker, 1)[1].split("?", 1)[0].split("#", 1)[0].lstrip("/")
+        if not asset_name or "\\" in asset_name or ".." in asset_name.split("/"):
+            return False
+        asset_path = STATIC_DIR / "assets" / Path(*asset_name.split("/"))
+        if not asset_path.is_file():
+            return False
+        content_type = mimetypes.guess_type(str(asset_path))[0] or "application/octet-stream"
+        if asset_path.suffix == ".js":
+            content_type = "text/javascript; charset=utf-8"
+        elif asset_path.suffix == ".css":
+            content_type = "text/css; charset=utf-8"
+        self._send(200, asset_path.read_bytes(), content_type)
+        return True
 
     def _redirect(self, target: str) -> None:
         self.send_response(303)
@@ -2431,10 +2527,35 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length).decode('utf-8', errors='replace')
         return parse_qs(body)
 
+    def _read_params(self) -> dict[str, list[str]]:
+        length = safe_int(self.headers.get("Content-Length"))
+        if length <= 0:
+            return {}
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
+        content_type = (self.headers.get("Content-Type") or "").lower()
+        if "application/json" in content_type:
+            try:
+                payload = json.loads(body)
+            except Exception:
+                payload = {}
+            if isinstance(payload, dict):
+                return {str(k): [str(v)] for k, v in payload.items() if v is not None}
+            return {}
+        return parse_qs(body)
+
     def _route_path(self, raw_path: str) -> str:
         path = raw_path.rstrip('/') or '/'
-        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/esp-logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter'}
-        if path not in known and not path.endswith('/api/status') and not path.endswith('/healthz'):
+        ingress_match = re.match(r"^/api/hassio_ingress/[^/]+(?P<rest>/.*)?$", path)
+        if ingress_match:
+            path = (ingress_match.group("rest") or "/").rstrip("/") or "/"
+        api_suffixes = (
+            '/api/app', '/api/events', '/api/status', '/api/add-meter', '/api/remove-meter',
+            '/api/search-control', '/api/restart-bridge', '/api/ignore', '/api/unignore',
+        )
+        if any(path.endswith(suffix) for suffix in api_suffixes):
+            return path
+        known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/esp-logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter', '/legacy'}
+        if path not in known and not path.endswith('/api/app') and not path.endswith('/api/status') and not path.endswith('/healthz'):
             last = '/' + path.rsplit('/', 1)[-1]
             if last in known:
                 path = last
@@ -2443,9 +2564,51 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = self._route_path(parsed.path)
-        params = self._read_form()
+        params = self._read_params()
         lang = detect_lang(self.headers, params)
         self._wmbus_lang = lang
+        if path.endswith('/api/remove-meter'):
+            meter_id = (params.get('meter_id') or [''])[0].strip()
+            ok, msg = remove_meter_from_options(meter_id)
+            webui_add_event('ok' if ok else 'error', msg)
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/add-meter'):
+            meter_id = (params.get('meter_id') or [''])[0].strip()
+            driver = (params.get('driver') or ['auto'])[0].strip()
+            key = (params.get('key') or [''])[0].strip()
+            meter_name = (params.get('meter_name') or [''])[0].strip()
+            ok, msg = add_meter_to_options(meter_id, driver, key, meter_name=meter_name)
+            webui_add_event('ok' if ok else 'error', msg)
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/search-control'):
+            action = (params.get('action') or ['start'])[0]
+            if action == 'stop':
+                ok, msg = update_options_for_search('0', '0.05', enabled=False)
+            else:
+                ok, msg = update_options_for_search((params.get('expected') or ['0'])[0], (params.get('tolerance') or ['0.05'])[0], enabled=True)
+            webui_add_event('ok' if ok else 'error', msg)
+            restart_ok, restart_msg = restart_addon_via_supervisor()
+            if restart_ok:
+                webui_add_event('ok', restart_msg)
+            elif os.environ.get("SUPERVISOR_TOKEN"):
+                webui_add_event('error', restart_msg)
+            self._send_json(200 if ok else 400, {"ok": ok, "message": msg, "restart_ok": restart_ok, "restart_message": restart_msg})
+            return
+        if path.endswith('/api/restart-bridge'):
+            restart_ok, restart_msg = restart_addon_via_supervisor()
+            webui_add_event('ok' if restart_ok else 'error', restart_msg)
+            self._send_json(200 if restart_ok else 400, {"ok": restart_ok, "message": restart_msg})
+            return
+        if path.endswith('/api/ignore'):
+            add_ignored((params.get('id') or [''])[0])
+            self._send_json(200, {"ok": True, "message": "Candidate ignored."})
+            return
+        if path.endswith('/api/unignore'):
+            remove_ignored((params.get('id') or [''])[0])
+            self._send_json(200, {"ok": True, "message": "Candidate restored."})
+            return
         if path == '/remove-meter':
             meter_id = (params.get('meter_id') or [''])[0].strip()
             ok, msg = remove_meter_from_options(meter_id)
@@ -2498,6 +2661,14 @@ class Handler(BaseHTTPRequestHandler):
         path = self._route_path(parsed.path)
         known = {'/', '/meters', '/discover', '/search', '/search-discover', '/candidate', '/logs', '/esp-logs', '/settings', '/about', '/ignore', '/unignore', '/config', '/search-control', '/restart-bridge', '/add-meter', '/remove-meter'}
 
+        if self._send_static_asset(parsed.path):
+            return
+        if path.endswith('/api/events'):
+            self._send_event_stream(lang)
+            return
+        if path.endswith('/api/app'):
+            self._send_json(200, frontend_payload(lang))
+            return
         if path.endswith('/api/status'):
             self._send(200, json.dumps(state(), ensure_ascii=False, indent=2).encode('utf-8'), 'application/json; charset=utf-8')
             return
@@ -2519,7 +2690,12 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.dumps(candidate_config(candidate or {'id': mid}), ensure_ascii=False, indent=2)
             self._send(200, payload.encode('utf-8'), 'application/json; charset=utf-8')
             return
+        if path == '/legacy':
+            self._send(200, render_page('/', params, lang).encode('utf-8'), 'text/html; charset=utf-8')
+            return
         if path in known:
+            if self._send_static_index():
+                return
             self._send(200, render_page(path, params, lang).encode('utf-8'), 'text/html; charset=utf-8')
             return
         self._send(404, b'not found\n', 'text/plain; charset=utf-8')
