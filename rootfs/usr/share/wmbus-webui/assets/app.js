@@ -669,6 +669,107 @@
     `;
   }
 
+  // ── ESP event table ───────────────────────────────────────────────────────
+  const ESP_COLORS = {
+    summary:            "#00bcd4",
+    summary_15min:      "#0097a7",
+    summary_60min:      "#006064",
+    dropped:            "#f44336",
+    truncated:          "#ff9800",
+    rx_path:            "#9c27b0",
+    suggestion:         "#ff5722",
+    boot:               "#4caf50",
+    busy_ether_changed: "#795548",
+    meter_snapshot:     "#009688",
+    meter_window:       "#3f51b5",
+  };
+  const ESP_ICONS = {
+    summary:            "📊",
+    summary_15min:      "📊",
+    summary_60min:      "📊",
+    dropped:            "✗",
+    truncated:          "⚠",
+    rx_path:            "📡",
+    suggestion:         "💡",
+    boot:               "🔄",
+    busy_ether_changed: "📶",
+    meter_snapshot:     "📸",
+    meter_window:       "🪟",
+  };
+  const ESP_KEY_MAP = {
+    summary:            ["listen_mode","total","ok","dropped","drop_pct","avg_ok_rssi","hint_en"],
+    summary_15min:      ["listen_mode","total","ok","dropped","drop_pct","avg_ok_rssi","hint_en"],
+    summary_60min:      ["listen_mode","total","ok","dropped","drop_pct","avg_ok_rssi","hint_en"],
+    dropped:            ["stage","reason","detail","mode"],
+    truncated:          ["stage","reason","detail","mode"],
+    rx_path:            ["stage","mode","rssi"],
+    suggestion:         ["chip","code","yaml_key","suggested_value"],
+    boot:               ["radio","listen_mode","version"],
+    busy_ether_changed: ["chip","state","drop_pct"],
+    meter_snapshot:     ["trigger","elapsed_s"],
+    meter_window:       ["trigger","id","mode","count_window","count_total","win_avg_rssi"],
+  };
+
+  function espEventSummary(payloadStr, evtype) {
+    let d = {};
+    try { d = JSON.parse(payloadStr || "{}"); } catch(_) { return (payloadStr || "").slice(0, 80); }
+    const keys = ESP_KEY_MAP[evtype] || Object.keys(d).slice(0, 5);
+    const parts = [];
+    for (const k of keys) {
+      const v = d[k];
+      if (v !== undefined && v !== null && String(v) !== "" && String(v) !== "null") {
+        parts.push(`${k}=${v}`);
+      }
+    }
+    if (evtype === "meter_snapshot") {
+      const meters = Array.isArray(d.meters) ? d.meters : [];
+      if (meters.length) {
+        const ids = meters.filter(m => m && m.id).map(m => m.id).join("  ");
+        parts.push(`meters=${meters.length} [${ids}]`);
+      }
+    }
+    const text = parts.join("  ");
+    return text.slice(0, 140) || (payloadStr || "").slice(0, 80);
+  }
+
+  function espEventsTable(rows) {
+    if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_events", "No events yet."))}</div>`;
+    return `
+      <div class="table-wrap">
+        <table class="esp-events-tbl">
+          <thead>
+            <tr>
+              <th style="white-space:nowrap;">${escapeHtml(t("webui_time","Time"))}</th>
+              <th>${escapeHtml(t("webui_type","Type"))}</th>
+              <th>${escapeHtml(t("webui_topic","Topic"))}</th>
+              <th>${escapeHtml(t("webui_summary","Summary"))}</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(row => {
+              const evtype  = row.evtype || "unknown";
+              const color   = ESP_COLORS[evtype] || "#607a88";
+              const icon    = ESP_ICONS[evtype]  || "·";
+              const epoch   = Number(row.epoch || 0);
+              const timeStr = epoch ? new Date(epoch * 1000).toLocaleString() : "-";
+              const topic   = (row.topic || "").split("/").slice(-3).join("/");
+              const summary = espEventSummary(row.payload || "", evtype);
+              return `
+                <tr>
+                  <td style="white-space:nowrap;color:#9eafba;font-size:11px;">${escapeHtml(timeStr)}</td>
+                  <td style="white-space:nowrap;">
+                    <span style="color:${color};font-weight:700;">${icon} ${escapeHtml(evtype)}</span>
+                  </td>
+                  <td style="color:#9eafba;font-size:11px;white-space:nowrap;">${escapeHtml(topic)}</td>
+                  <td style="font-size:12px;word-break:break-word;max-width:420px;">${escapeHtml(summary)}</td>
+                </tr>`;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
   function simpleRows(rows, fields) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_rows", "No rows."))}</div>`;
     return `
@@ -719,7 +820,7 @@
       </section>
       <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2><span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
-        ${simpleRows(events, ["epoch", "evtype", "topic", "payload"])}
+        ${espEventsTable(events)}
       </section>
     `;
   }
