@@ -1490,6 +1490,7 @@ def page_dashboard(data: dict, params: dict[str, list[str]], lang: str = DEFAULT
       {render_waiting_panel(data, lang)}
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "configured_meters"))}</h2>{render_filter_links('.', media, lang)}</div>{render_configured_meters(meters, max_items=6, lang=lang, pending=pending, cfg=model["cfg"])}</section>
       <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "detected_candidates"))}</h2></div>{render_candidate_summary(data['candidates'], lang)}</section>
+      <section class="card" style="margin-top:14px;"><div class="section-head"><h2>{esc(tr(lang, "recent_events_title"))}</h2><a class="small-button" href="logs">{esc(tr(lang, "nav_logs"))}</a></div>{render_events(data.get("events", []), max_items=8, lang=lang)}</section>
       <div class="footer"><span>wMBus MQTT Bridge</span><span>{esc(tr(lang, "footer_subtitle"))}</span><span>{esc(tr(lang, "footer_caption"))}</span></div>'''
     return shell('dashboard', body, model['status'].get('updated_at', ''), lang=lang)
 
