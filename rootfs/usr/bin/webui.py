@@ -859,11 +859,13 @@ def status_model(data: dict) -> dict:
     # each payload to status_esp_diag.json with a _bridge_rx_epoch timestamp.
     # ESP publishes every 60 s; "total" = exact telegram count in that window —
     # the ground truth. Falls back to own counting when absent or stale (>90 s).
+    rate_source = "bridge"
     esp_diag = read_json(STATUS_ESP_DIAG_JSON)
     if esp_diag:
         esp_rx_epoch = safe_int(esp_diag.get("_bridge_rx_epoch", 0))
         if esp_rx_epoch > 0 and (_time.time() - esp_rx_epoch) <= 90:
             rate_current_min = safe_int(esp_diag.get("total", rate_current_min))
+            rate_source = "esp"
 
     return {
         "status": status,
@@ -886,6 +888,7 @@ def status_model(data: dict) -> dict:
         "raw_per_min": raw_per_min,
         "rate_current_min": rate_current_min,
         "rate_prev_min": rate_prev_min,
+        "rate_source": rate_source,
     }
 
 
@@ -1169,6 +1172,7 @@ def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
     per_min_str = f"{per_min:.1f}" if per_min != int(per_min) else str(int(per_min))
     current_min = model.get('rate_current_min', 0)
     prev_min = model.get('rate_prev_min', 0)
+    rate_source = model.get('rate_source', 'bridge')
     delta = current_min - prev_min
 
     # Trend indicator: colour + arrow + numeric delta
@@ -1189,6 +1193,23 @@ def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
         f'<span style="font-size:32px;font-weight:900;color:{trend_colour};line-height:1.1;">'
         f'{trend_arrow}</span>'
         f'<span style="font-size:13px;color:{trend_colour};font-weight:700;">{trend_delta}</span>'
+    )
+
+    # Source indicator badge
+    if rate_source == "esp":
+        source_colour = "#00bcd4"
+        source_icon = "📡"
+        source_text = "ESP"
+    else:
+        source_colour = "#607a88"
+        source_icon = "⚙"
+        source_text = "bridge"
+    source_html = (
+        f'<div style="text-align:right;padding-top:6px;border-top:1px solid #1a3344;margin-top:6px;'
+        f'font-size:10px;color:#4d6875;">'
+        f'{esc(tr(lang, "rate_source_label"))}: '
+        f'<span style="color:{source_colour};font-weight:700;">{source_icon} {source_text}</span>'
+        f'</div>'
     )
 
     # Meter count bar relative to candidates
@@ -1229,6 +1250,7 @@ def render_stats(model: dict, lang: str = DEFAULT_LANG) -> str:
         </div>
 
       </div>
+      {source_html}
     </div>
 
     <!-- Supporting metrics — no duplicates with Stan systemu panel -->
