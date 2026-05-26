@@ -61,15 +61,14 @@
   let liveLang = "";
   let liveRenderTimer = null;
 
-  // Debounced render for SSE updates — prevents full DOM replacement on every
-  // incoming event (telegrams can arrive several times per second in busy networks).
-  // Button/fetch-triggered renders call render() directly and are unaffected.
+  // Debounced render for SSE live updates — coalesces rapid events into one
+  // DOM patch. 150ms is enough to batch bursts without feeling sluggish.
   function scheduleRender() {
     if (liveRenderTimer) return;
     liveRenderTimer = window.setTimeout(() => {
       liveRenderTimer = null;
       render();
-    }, 800);
+    }, 150);
   }
 
   function currentRoute() {
@@ -994,7 +993,27 @@
   }
 
   function render() {
-    app.innerHTML = renderRoute();
+    const newHtml = renderRoute();
+    if (typeof morphdom !== "undefined") {
+      // morphdom patches only the DOM nodes that actually changed —
+      // no flicker, no scroll reset, no lost input focus.
+      const tmp = document.createElement("div");
+      tmp.id = "app";
+      tmp.innerHTML = newHtml;
+      morphdom(app, tmp, {
+        // Never replace the app root itself — only its children.
+        onBeforeElUpdated(from, to) {
+          // Skip elements the user is actively interacting with.
+          if (from === document.activeElement) return false;
+          // Skip identical nodes (morphdom checks attrs, this adds textContent check).
+          if (from.isEqualNode(to)) return false;
+          return true;
+        },
+      });
+    } else {
+      // Fallback when morphdom.min.js failed to load.
+      app.innerHTML = newHtml;
+    }
   }
 
   document.addEventListener("click", async (event) => {
