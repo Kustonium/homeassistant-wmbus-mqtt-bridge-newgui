@@ -69,12 +69,16 @@ RAW_RATE_PREV_MIN_COUNT=0
 touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
 [[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
 
-# Record bridge start time for the WebGUI rate denominator fix.
-printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
-
 iso_now() {
   date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z'
 }
+
+epoch_now() {
+  date +%s 2>/dev/null || echo 0
+}
+
+# Record bridge start time for the WebGUI rate denominator fix.
+printf '%s\n' "$(epoch_now)" > "${STATUS_BRIDGE_START_FILE}" 2>/dev/null || true
 
 status_add_event() {
   local level="$1"
@@ -85,10 +89,6 @@ status_add_event() {
   printf '%s	%s	%s
 ' "${now}" "${level}" "${message}" >> "${STATUS_EVENTS_FILE}" 2>/dev/null || true
   tail -n 40 "${STATUS_EVENTS_FILE}" > "${STATUS_EVENTS_FILE}.tmp" 2>/dev/null && mv "${STATUS_EVENTS_FILE}.tmp" "${STATUS_EVENTS_FILE}" 2>/dev/null || true
-}
-
-epoch_now() {
-  date +%s 2>/dev/null || echo 0
 }
 
 status_record_seen() {
@@ -606,6 +606,9 @@ touch "${STATUS_ESP_EVENTS_FILE}" 2>/dev/null || true
           > "${STATUS_ESP_BOOT_FILE}.tmp" \
           && mv "${STATUS_ESP_BOOT_FILE}.tmp" "${STATUS_ESP_BOOT_FILE}" 2>/dev/null \
           || true
+        # Clear stale suggestion on ESP reboot — suggestions from previous session
+        # are no longer actionable after the ESP restarts.
+        rm -f "${STATUS_ESP_SUGGESTION_FILE}" 2>/dev/null || true
       fi
     done < <(
       ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" \
