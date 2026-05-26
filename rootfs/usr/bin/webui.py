@@ -36,6 +36,8 @@ OPTIONS_JSON = BASE / "options.json"
 # Per-minute rate dashboard files written by bridge.sh
 STATUS_RATE_1M_JSON = BASE / "status_rate_1m.json"
 STATUS_BRIDGE_START_FILE = BASE / "status_bridge_start.txt"
+# ESP diagnostic summary written by background subscriber in bridge.sh
+STATUS_ESP_DIAG_JSON = BASE / "status_esp_diag.json"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
@@ -851,6 +853,17 @@ def status_model(data: dict) -> dict:
     rate_epoch = safe_int(rate_1m.get("epoch", 0))
     if rate_epoch > 0 and (_time.time() - rate_epoch) > 90:
         rate_current_min = 0
+
+    # Prefer ESP diagnostic summary when available and fresh.
+    # bridge.sh subscribes to wmbus/+/diag/summary in background and writes
+    # each payload to status_esp_diag.json with a _bridge_rx_epoch timestamp.
+    # ESP publishes every 60 s; "total" = exact telegram count in that window —
+    # the ground truth. Falls back to own counting when absent or stale (>90 s).
+    esp_diag = read_json(STATUS_ESP_DIAG_JSON)
+    if esp_diag:
+        esp_rx_epoch = safe_int(esp_diag.get("_bridge_rx_epoch", 0))
+        if esp_rx_epoch > 0 and (_time.time() - esp_rx_epoch) <= 90:
+            rate_current_min = safe_int(esp_diag.get("total", rate_current_min))
 
     return {
         "status": status,

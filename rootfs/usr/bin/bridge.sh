@@ -541,6 +541,28 @@ if command -v stdbuf >/dev/null 2>&1; then
   STDBUF_BIN="stdbuf -oL -eL"
 fi
 
+# Background subscriber for ESP diagnostic summaries (wmbus/+/diag/summary).
+# ESP publishes every 60 s: {"event":"summary","interval_s":60,"total":N,...}
+# bridge.sh injects _bridge_rx_epoch so webui.py can check freshness.
+# When fresh (<90 s) webui.py uses ESP's exact "total" count as the live rate
+# instead of its own per-minute counting — more accurate source of truth.
+STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
+(
+  while true; do
+    ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/summary" -W 90 2>/dev/null \
+      | while IFS= read -r _diag_line; do
+          [[ -n "${_diag_line}" ]] || continue
+          _ts="$(date +%s 2>/dev/null || echo 0)"
+          printf '%s\n' "${_diag_line}" \
+            | jq --argjson t "${_ts}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \
+            > "${STATUS_ESP_DIAG_FILE}.tmp" \
+            && mv "${STATUS_ESP_DIAG_FILE}.tmp" "${STATUS_ESP_DIAG_FILE}" 2>/dev/null \
+            || true
+        done
+    sleep 5
+  done
+) &
+
 mqtt_pub() {
   local topic="$1"
   local payload="$2"
