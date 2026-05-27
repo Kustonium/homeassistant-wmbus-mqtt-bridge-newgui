@@ -265,10 +265,7 @@
 
     if (!model.pending_restart && pendingCount === 0) return "";
 
-    const detail = pendingCount > 0
-      ? t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.")
-        + (pendingCount > 1 ? ` (${pendingCount})` : "")
-      : t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.");
+    const detail = t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.");
 
     return `
       <div class="notice warn" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -604,6 +601,13 @@
     const recentMeters = asArray(data.meters).slice(0, 6);
     const recentCandidates = asArray(data.candidates).slice(0, 6);
 
+    // Pending = in options.json but not yet decoded (same logic as metersPage)
+    const decodedIds = new Set(asArray(data.meters).map(m => String(m.id || "").toLowerCase()));
+    const pending    = asArray((data.options || {}).meters).filter(m => {
+      const mid = String(m.meter_id || "").toLowerCase();
+      return mid && !decodedIds.has(mid);
+    });
+
     return `
       <section class="section">
         <div class="status-row">
@@ -621,6 +625,7 @@
         <div>
           <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${recentMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
           ${meterTable(recentMeters, false)}
+          ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
         </div>
         ${Number(model.meter_count || 0) === 0 ? `
         <div>
