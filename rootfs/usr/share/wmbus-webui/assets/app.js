@@ -224,13 +224,16 @@
   }
 
   // ── #1 Encryption badge (shared by candidateTable + pendingMetersSection) ─
+  // bridge.sh sets encryption="unknown" when type_line contains no "encrypted"
+  // or "aes" keyword — meaning wmbusmeters did NOT flag it as AES-encrypted.
+  // "unknown" therefore means "not detected as encrypted" = no AES in practice.
   function encBadge(enc, note) {
     const e = (enc || "").toLowerCase();
     if (!e) return `<span class="pill muted" title="${escapeHtml(t("enc_unknown", "Not yet analyzed"))}">?</span>`;
     const bad  = ["encrypted", "aes_required", "aes"].includes(e);
-    const good = ["not_encrypted", "no_aes", "plain", "unencrypted"].includes(e);
-    const label = bad ? "AES req." : good ? "no AES" : e;
-    const cls   = bad ? "bad"      : good ? "ok"     : "muted";
+    const good = ["not_encrypted", "no_aes", "plain", "unencrypted", "unknown"].includes(e);
+    const label = bad ? t("enc_aes_req", "AES req.") : t("enc_no_aes", "no AES");
+    const cls   = bad ? "bad" : "ok";
     const title = note ? ` title="${escapeHtml(note)}"` : "";
     return `<span class="pill ${cls}"${title}>${escapeHtml(label)}</span>`;
   }
@@ -974,8 +977,11 @@
     return text.slice(0, 140) || (payloadStr || "").slice(0, 80);
   }
 
-  function espEventsTable(rows) {
+  function espEventsTable(rows, activeDevice) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_events", "No events yet."))}</div>`;
+    // Detect multi-device scenario — only dim non-active rows when >1 device is present
+    const devices = [...new Set(rows.map(r => (r.topic || "").split("/")[1]).filter(Boolean))];
+    const multiDevice = devices.length > 1;
     return `
       <div class="table-wrap">
         <table class="esp-events-tbl">
@@ -989,20 +995,24 @@
           </thead>
           <tbody>
             ${rows.map(row => {
-              const evtype  = row.evtype || "unknown";
-              const color   = ESP_COLORS[evtype] || "#607a88";
-              const icon    = ESP_ICONS[evtype]  || "·";
-              const epoch   = Number(row.epoch || 0);
-              const timeStr = epoch ? new Date(epoch * 1000).toLocaleString() : "-";
-              const topic   = (row.topic || "").split("/").slice(-3).join("/");
-              const summary = espEventSummary(row.payload || "", evtype);
+              const evtype     = row.evtype || "unknown";
+              const color      = ESP_COLORS[evtype] || "#607a88";
+              const icon       = ESP_ICONS[evtype]  || "·";
+              const epoch      = Number(row.epoch || 0);
+              const timeStr    = epoch ? new Date(epoch * 1000).toLocaleString() : "-";
+              const topic      = (row.topic || "").split("/").slice(-3).join("/");
+              const rowDevice  = (row.topic || "").split("/")[1] || "";
+              const isActive   = activeDevice && rowDevice === activeDevice;
+              const rowOpacity = multiDevice && !isActive ? "opacity:0.45;" : "";
+              const activeDot  = isActive ? `<span style="color:#00e5ff;margin-left:3px;font-size:9px;" title="active ESP">●</span>` : "";
+              const summary    = espEventSummary(row.payload || "", evtype);
               return `
-                <tr>
+                <tr style="${rowOpacity}">
                   <td style="white-space:nowrap;color:#9eafba;font-size:11px;">${escapeHtml(timeStr)}</td>
                   <td style="white-space:nowrap;">
                     <span style="color:${color};font-weight:700;">${icon} ${escapeHtml(evtype)}</span>
                   </td>
-                  <td style="color:#9eafba;font-size:11px;white-space:nowrap;">${escapeHtml(topic)}</td>
+                  <td style="color:#9eafba;font-size:11px;white-space:nowrap;">${escapeHtml(topic)}${activeDot}</td>
                   <td style="font-size:12px;word-break:break-word;max-width:420px;">${escapeHtml(summary)}</td>
                 </tr>`;
             }).join("")}
@@ -1041,28 +1051,32 @@
   function espLogsPage() {
     const data = state.data || {};
     const esp = data.esp || {};
-    const diag = esp.diag || {};
     const suggestion = esp.suggestion || {};
-    const boot = esp.boot || {};
     const events = asArray(esp.events);
+
+    // Identify active ESP device: most recent summary event carries the device's topic.
+    // bridge.sh subscribes to wmbus/+/diag/summary; topic segment [1] is the device name.
+    const latestSummary = events.find(r =>
+      r.evtype === "summary" || r.evtype === "summary_15min" || r.evtype === "summary_60min"
+    );
+    const activeTopic  = latestSummary ? (latestSummary.topic || "") : "";
+    const activeDevice = activeTopic.split("/")[1] || "";
+
+    const activeDeviceBadge = activeDevice
+      ? `<span class="pill ok" style="font-size:11px;margin-left:10px;">📡 ${escapeHtml(activeDevice)}</span>`
+      : "";
+
     return `
-      <section class="section grid two">
-        <div>
-          <div class="section-head"><h2>${escapeHtml(t("webui_diagnostics", "Diagnostics"))}</h2></div>
-          ${Object.keys(diag).length ? objectKv(diag) : `<div class="empty">${escapeHtml(t("webui_no_diagnostics", "No diagnostic summary."))}</div>`}
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2>
+          <span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadge}</span>
         </div>
-        <div>
-          <div class="section-head"><h2>${escapeHtml(t("webui_suggestion", "Suggestion"))}</h2></div>
-          ${Object.keys(suggestion).length ? objectKv(suggestion) : `<div class="empty">${escapeHtml(t("webui_no_suggestion", "No tuning suggestion."))}</div>`}
-        </div>
+        ${espEventsTable(events, activeDevice)}
       </section>
       <section class="section">
-        <div class="section-head"><h2>${escapeHtml(t("webui_boot", "Boot"))}</h2></div>
-        ${Object.keys(boot).length ? objectKv(boot) : `<div class="empty">${escapeHtml(t("webui_no_boot", "No boot data."))}</div>`}
-      </section>
-      <section class="section">
-        <div class="section-head"><h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2><span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
-        ${espEventsTable(events)}
+        <div class="section-head"><h2>${escapeHtml(t("webui_suggestion", "Suggestion"))}</h2></div>
+        ${Object.keys(suggestion).length ? objectKv(suggestion) : `<div class="empty">${escapeHtml(t("webui_no_suggestion", "No tuning suggestion."))}</div>`}
       </section>
     `;
   }
