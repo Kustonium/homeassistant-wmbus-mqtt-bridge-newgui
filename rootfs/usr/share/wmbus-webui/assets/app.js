@@ -248,16 +248,33 @@
   }
 
   // ── #7 Pending-restart banner ─────────────────────────────────────────────
-  // Shown when options.json is newer than status.json (user saved settings
-  // but the add-on hasn't restarted yet to pick them up).
+  // Shown when:
+  //   a) options.json is newer than status.json (mtime check), OR
+  //   b) options.json contains meters that are not yet decoded (reliable signal
+  //      even when bridge.sh frequently re-writes status.json resetting the mtime flag).
   function pendingRestartBanner() {
-    const model = (state.data || {}).model || {};
-    if (!model.pending_restart) return "";
+    const data  = state.data || {};
+    const model = data.model || {};
+
+    // Compute pending meter count: in options.json but NOT yet in decoded meters TSV.
+    const decodedIds   = new Set(asArray(data.meters).map(m => String(m.id || "").toLowerCase()));
+    const pendingCount = asArray((data.options || {}).meters).filter(m => {
+      const mid = String(m.meter_id || "").toLowerCase();
+      return mid && !decodedIds.has(mid);
+    }).length;
+
+    if (!model.pending_restart && pendingCount === 0) return "";
+
+    const detail = pendingCount > 0
+      ? t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.")
+        + (pendingCount > 1 ? ` (${pendingCount})` : "")
+      : t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.");
+
     return `
       <div class="notice warn" style="margin-bottom:14px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
         <div>
           <strong>⚠ ${escapeHtml(t("pending_title", "Pending changes — waiting for restart"))}</strong>
-          <div style="font-size:11px;color:#b0a060;margin-top:3px;">${escapeHtml(t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply."))}</div>
+          <div style="font-size:11px;color:#b0a060;margin-top:3px;">${escapeHtml(detail)}</div>
         </div>
         <button class="btn warn" data-action="restart" style="white-space:nowrap;flex-shrink:0;">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>
       </div>
