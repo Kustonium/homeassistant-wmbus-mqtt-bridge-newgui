@@ -499,7 +499,11 @@
     const trend = current - previous;
     const trendClass = trend > 0 ? "up" : trend < 0 ? "down" : "flat";
     const trendMark = trend > 0 ? "↑" : trend < 0 ? "↓" : "→";
-    const maxValue = Math.max(Number(model.candidate_count || 0), Number(model.meter_count || 0), Number(model.raw_per_min || 0), 1);
+    // Separate scales: candidates/meters share one scale, rate has its own.
+    // Mixing raw_per_min (84.2) with candidate_count (5) as a single maxValue
+    // makes candidate/meter bars nearly invisible while rate bar shows 100%.
+    const countMax = Math.max(Number(model.candidate_count || 0), Number(model.meter_count || 0), 1);
+    const rateMax  = Math.max(Number(model.raw_per_min || 0), 1);
     // Rate source badge (#9)
     const rateSource = model.rate_source || "bridge";
     const srcIcon  = rateSource === "esp" ? "📡" : "⚙";
@@ -532,9 +536,9 @@
             ${escapeHtml(t("rate_source_label", "Rate source"))}: <span style="color:${srcColor};font-weight:700;">${srcIcon} ${escapeHtml(rateSource)}</span>
           </div>
           <div class="stats-bars">
-            ${statsRow("candidate", t("detected_candidates", "Detected candidates"), model.candidate_count || 0, model.candidate_count || 0, maxValue)}
-            ${statsRow("meter", t("configured_meters", "Configured meters"), model.meter_count || 0, model.meter_count || 0, maxValue)}
-            ${statsRow("rate", t("telegrams_per_min_metric", "Telegrams / min"), model.raw_per_min || 0, model.raw_per_min || 0, maxValue, t("rate_session_avg_label", "60 min avg"))}
+            ${statsRow("candidate", t("detected_candidates", "Detected candidates"), model.candidate_count || 0, model.candidate_count || 0, countMax)}
+            ${statsRow("meter", t("configured_meters", "Configured meters"), model.meter_count || 0, model.meter_count || 0, countMax)}
+            ${statsRow("rate", t("telegrams_per_min_metric", "Telegrams / min"), model.raw_per_min || 0, model.raw_per_min || 0, rateMax, t("rate_session_avg_label", "60 min avg"))}
           </div>
         </div>
       </section>
