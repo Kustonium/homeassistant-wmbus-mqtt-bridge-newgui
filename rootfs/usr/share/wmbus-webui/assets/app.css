@@ -737,6 +737,32 @@ tr:last-child td {
   background: transparent;
 }
 
+.btn.warn {
+  background: #3e2e0a;
+  border-color: #a07830;
+  color: #ffe6a3;
+}
+
+.notice {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  font-size: 13px;
+}
+
+.notice.warn {
+  background: #1e1800;
+  border-color: #a07830;
+  color: #ffe6a3;
+}
+
+.notice.good {
+  background: #091a10;
+  border-color: #1e6b3a;
+  color: #cffff0;
+}
+
 .empty {
   padding: 22px;
   color: var(--quiet);

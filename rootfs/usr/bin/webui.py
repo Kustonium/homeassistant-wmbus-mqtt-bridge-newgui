@@ -873,6 +873,16 @@ def status_model(data: dict) -> dict:
             rate_current_min = safe_int(esp_diag.get("total", rate_current_min))
             rate_source = "esp"
 
+    # Pending restart: options.json is newer than status.json — user saved
+    # settings but the add-on has not restarted yet to pick them up.
+    pending_restart = False
+    try:
+        opts_mtime   = OPTIONS_JSON.stat().st_mtime
+        status_mtime = STATUS_JSON.stat().st_mtime
+        pending_restart = opts_mtime > status_mtime
+    except OSError:
+        pass
+
     return {
         "status": status,
         "cfg": cfg,
@@ -895,6 +905,7 @@ def status_model(data: dict) -> dict:
         "rate_current_min": rate_current_min,
         "rate_prev_min": rate_prev_min,
         "rate_source": rate_source,
+        "pending_restart": pending_restart,
     }
 
 
