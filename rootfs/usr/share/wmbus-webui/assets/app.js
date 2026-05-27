@@ -589,7 +589,13 @@
           ${meterTable(recentMeters, false)}
         </div>
         <div>
-          <div class="section-head"><h2>${escapeHtml(t("webui_top_candidates", "Top candidates"))}</h2><span>${recentCandidates.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
+          <div class="section-head">
+            <h2>${escapeHtml(t("webui_top_candidates", "Top candidates"))}</h2>
+            <span>${recentCandidates.length} ${escapeHtml(t("webui_shown", "shown"))}</span>
+          </div>
+          ${Number(model.meter_count || 0) > 0
+            ? `<div style="font-size:11px;color:#607a88;margin-bottom:8px;">📡 ${escapeHtml(t("raw_signal_note_short", "Decode mode — counts are raw MQTT signal, not decoded"))}</div>`
+            : ""}
           ${candidateTable(recentCandidates, false)}
         </div>
       </section>
@@ -660,6 +666,11 @@
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_candidates", "No visible candidates."))}</div>`;
     // analysis is keyed by meter ID
     const analysis = (state.data || {}).analysis || {};
+    const decodeMode = Number(((state.data || {}).model || {}).meter_count || 0) > 0;
+    // In decode mode the 15m/60m columns reflect raw MQTT (physical layer) not wmbusmeters output
+    const rawTip = decodeMode
+      ? ` title="${escapeHtml(t("raw_signal_col_tip", "Raw MQTT signal count — physical layer, not wmbusmeters decoded"))}" style="cursor:help;border-bottom:1px dashed #607a88;"`
+      : "";
     return `
       <div class="table-wrap">
         <table>
@@ -671,8 +682,8 @@
               <th>${escapeHtml(t("media", "Medium"))}</th>
               <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
-              <th>15m</th>
-              <th>60m</th>
+              <th><span${rawTip}>15m${decodeMode ? " 📡" : ""}</span></th>
+              <th><span${rawTip}>60m${decodeMode ? " 📡" : ""}</span></th>
               <th>${escapeHtml(t("reception", "Interval"))}</th>
               ${withActions ? "<th></th>" : ""}
             </tr>
@@ -796,14 +807,25 @@
 
   function discoverPage() {
     const data = state.data || {};
+    const model = data.model || {};
     const all = asArray(data.candidates);
     const filtered = applyMediaFilter(all, "type");
+    const decodeMode = Number(model.meter_count || 0) > 0;
+    const rawSignalNote = decodeMode ? `
+      <div class="notice" style="margin-bottom:12px;display:flex;gap:10px;align-items:flex-start;">
+        <span style="font-size:16px;flex-shrink:0;">📡</span>
+        <div>
+          <strong>${escapeHtml(t("decode_mode_label", "Decode mode active"))}</strong>
+          <div style="font-size:11px;color:#9eafba;margin-top:2px;">${escapeHtml(t("raw_signal_note", "wmbusmeters is decoding configured meters only. The 15m / 60m / Interval columns below reflect raw MQTT signal counts from the physical layer — not wmbusmeters decoded output."))}</div>
+        </div>
+      </div>` : "";
     return `
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
           <span>${filtered.length}${filtered.length !== all.length ? `/${all.length}` : ""} ${escapeHtml(t("webui_visible", "visible"))}</span>
         </div>
+        ${rawSignalNote}
         ${filterChips()}
         ${candidateTable(filtered, true)}
       </section>

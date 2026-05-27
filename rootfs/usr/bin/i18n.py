@@ -265,6 +265,10 @@ I18N: dict[str, dict[str, str]] = {
         "media_electricity": "electricity",
         "media_heat": "heat",
         "media_other": "other",
+        "decode_mode_label": "Decode mode active",
+        "raw_signal_note": "wmbusmeters is decoding configured meters only. The 15m / 60m / Interval columns reflect raw MQTT signal counts (physical layer) — not wmbusmeters decoded output.",
+        "raw_signal_note_short": "Decode mode — counts are raw MQTT signal, not decoded",
+        "raw_signal_col_tip": "Raw MQTT signal count — physical layer, not wmbusmeters decoded",
     },
     "pl": {
         "nav_dashboard": "PANEL",
@@ -513,6 +517,10 @@ I18N: dict[str, dict[str, str]] = {
         "media_electricity": "prąd",
         "media_heat": "ciepło",
         "media_other": "inne",
+        "decode_mode_label": "Tryb dekodowania aktywny",
+        "raw_signal_note": "wmbusmeters dekoduje tylko skonfigurowane liczniki. Kolumny 15m / 60m / Interwał pokazują surowe liczniki sygnału MQTT (warstwa fizyczna) — nie zdekodowane telegramy wmbusmeters.",
+        "raw_signal_note_short": "Tryb dekodowania — liczniki to surowy sygnał MQTT, nie zdekodowane",
+        "raw_signal_col_tip": "Surowy sygnał MQTT — warstwa fizyczna, nie wmbusmeters",
     },
     "de": {
         "nav_dashboard": "DASHBOARD",
