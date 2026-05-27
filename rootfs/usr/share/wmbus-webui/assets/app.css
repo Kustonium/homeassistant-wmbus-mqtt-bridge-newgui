@@ -978,12 +978,14 @@ tr:last-child td {
   }
 
   .grid,
-  .grid.two,
   .status-row,
   .form-grid,
   .stats-live {
     grid-template-columns: 1fr;
   }
+
+  /* grid.two (dashboard two-col) collapses at narrower breakpoint so HA
+     ingress panels (typically 700-900 px) keep the side-by-side layout */
 
   .stats-row {
     grid-template-columns: 44px minmax(0, 1fr);
@@ -1001,5 +1003,11 @@ tr:last-child td {
   .event-row {
     grid-template-columns: 1fr;
     gap: 4px;
+  }
+}
+
+@media (max-width: 680px) {
+  .grid.two {
+    grid-template-columns: 1fr;
   }
 }

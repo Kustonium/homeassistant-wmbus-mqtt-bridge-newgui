@@ -446,7 +446,6 @@
           ${navHtml(false)}
           <div class="sidebar-foot">
             <span>${escapeHtml(runtime)}</span>
-            <a class="btn ghost" href="legacy">${escapeHtml(t("webui_legacy", "Legacy UI"))}</a>
           </div>
         </aside>
         <main class="main">
@@ -459,7 +458,6 @@
             <div class="top-actions">
               ${languageSelect()}
               <span class="pill ${state.liveConnected ? "ok" : "muted"}"><span class="dot"></span>${state.liveConnected ? "LIVE" : "POLL"}</span>
-              <button class="btn" data-action="refresh">${escapeHtml(t("webui_refresh", "Refresh"))}</button>
               <button class="btn danger" data-action="restart">${escapeHtml(t("webui_restart", "Restart"))}</button>
             </div>
           </header>
@@ -486,7 +484,7 @@
   function statusCard(title, ok, detail) {
     return `
       <div class="card status-card">
-        ${pill(ok, ok ? t("webui_online", "Online") : t("webui_attention", "Attention"))}
+        ${pill(ok, ok ? t("online_label", "Online") : t("attention_label", "Attention"))}
         <strong>${escapeHtml(title)}</strong>
         <span>${escapeHtml(detail || "")}</span>
       </div>
@@ -642,10 +640,11 @@
                 const {label: statusLabel, color: statusColor} = meterStatusLabel(seen15m, seen60m);
                 const unit    = unitFromKey(row.value_key || "");
                 const valueStr = (row.value && row.value !== "-") ? row.value : "—";
+                const {icon: mIcon} = mediaIcon(row.media || "", row.driver || "");
                 return `
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong></td>
-                    <td>${escapeHtml(row.name || row.id || "-")}</td>
+                    <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || row.id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>
                       <span>${escapeHtml(valueStr)}${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}</span>
@@ -1292,12 +1291,6 @@
     const target = event.target.closest("[data-action]");
     if (!target) return;
     const action = target.dataset.action;
-
-    if (action === "refresh") {
-      await fetchData(currentLang());
-      toast(t("webui_dashboard_refreshed", "Dashboard refreshed."));
-      return;
-    }
 
     if (action === "toggle-language") {
       const menu = target.closest(".lang-menu")?.querySelector(".lang-options");
