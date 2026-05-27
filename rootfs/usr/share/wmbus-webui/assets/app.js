@@ -593,6 +593,72 @@
     `;
   }
 
+  // Unified pending panel for the dashboard — merges "needs restart" and
+  // "waiting for first telegram" into one box (like old webui render_pending_panel
+  // + render_waiting_panel, but combined). Restart button is shown only when
+  // model.pending_restart is true (options.json newer than status.json = addon
+  // not restarted yet). After restart the button disappears but meters remain
+  // listed until the first telegram is decoded.
+  function dashboardPendingPanel(pending, model, analysis) {
+    if (pending.length === 0) return "";
+
+    const needsRestart = !!model.pending_restart;
+
+    const title = needsRestart
+      ? t("pending_title", "Pending changes — waiting for restart")
+      : t("waiting_for_telegrams_title", "Waiting for first telegram");
+
+    const text = needsRestart
+      ? t("pending_text", "These meters are saved in options.json but the add-on hasn't picked them up yet. Restart the add-on to apply.")
+      : t("waiting_for_telegrams_text", "These meters are configured but haven't sent a telegram yet.");
+
+    const rows = pending.map(m => {
+      const mid    = String(m.meter_id || "").toLowerCase();
+      const type   = m.type === "other" ? (m.type_other || "other") : (m.type || "auto");
+      const hasKey = !!(m.key && m.key.trim());
+      const a      = analysis[mid] || analysis[mid.toUpperCase()] || {};
+      const enc    = String(a.encryption || "").toLowerCase();
+      const note   = String(a.note || "");
+      return `
+        <tr>
+          <td><strong>${escapeHtml(mid)}</strong></td>
+          <td style="color:#9eafba;font-size:12px;">${escapeHtml(type)}</td>
+          <td>${encBadge(enc, note)}</td>
+          <td>${hasKey
+            ? `<span class="pill ok">✓ set</span>`
+            : `<span class="pill muted">${escapeHtml(t("no_key", "No key"))}</span>`}
+          </td>
+          <td><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(mid)}">${escapeHtml(t("webui_remove", "Remove"))}</button></td>
+        </tr>`;
+    }).join("");
+
+    return `
+      <div class="notice warn" style="margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+          <div>
+            <strong>${needsRestart ? "⚠ " : "⏳ "}${escapeHtml(title)}</strong>
+            <div style="font-size:11px;color:#b0a060;margin-top:3px;">${escapeHtml(text)}</div>
+          </div>
+          ${needsRestart ? `<button class="btn warn" data-action="restart" style="white-space:nowrap;flex-shrink:0;">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>` : ""}
+        </div>
+        <div class="table-wrap" style="margin-top:4px;">
+          <table>
+            <thead>
+              <tr>
+                <th>${escapeHtml(t("webui_id", "ID"))}</th>
+                <th>${escapeHtml(t("driver", "Driver"))}</th>
+                <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
+                <th>${escapeHtml(t("aes_key_label", "AES key"))}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
   function dashboard() {
     const data = state.data || {};
     const model = data.model || {};
@@ -618,14 +684,13 @@
         </div>
       </section>
 
-      ${pendingRestartBanner()}
+      ${dashboardPendingPanel(pending, model, data.analysis || {})}
       ${statsPanel(model)}
 
       <section class="section ${Number(model.meter_count || 0) === 0 ? "grid two" : ""}">
         <div>
           <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${recentMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
           ${meterTable(recentMeters, false)}
-          ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
         </div>
         ${Number(model.meter_count || 0) === 0 ? `
         <div>
