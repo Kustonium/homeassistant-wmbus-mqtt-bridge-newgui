@@ -830,14 +830,24 @@ def status_model(data: dict) -> dict:
     except Exception:
         pass
 
-    # Telegrams-per-minute: sum seen_60m across all candidates and meters.
+    # Telegrams-per-minute: sum seen_60m across active sources.
     # Divide by actual elapsed minutes (capped at 60) instead of always 60 —
-    # dividing by 60 when the bridge is young (e.g. 23 min uptime) produces a
-    # systematically low rate that confuses the user (3.8/min vs real 11/min).
-    total_60m = (
-        sum(safe_int(c.get("seen_60m")) for c in data.get("candidates", []))
-        + sum(safe_int(m.get("seen_60m")) for m in data.get("meters", []))
-    )
+    # dividing by 60 when the bridge is young (e.g. 4 min uptime) produces an
+    # inflated rate because stale TSV counters can hold values from the previous
+    # listen session.
+    #
+    # In DECODE mode (meter_count > 0) the candidates TSV is NEVER updated by
+    # bridge.sh (gated by OFFICIAL_METERS_COUNT == 0). Including stale candidate
+    # seen_60m values in the sum causes badly inflated rates at startup.
+    # In decode mode use only meters TSV (which IS kept current per telegram).
+    # In LISTEN mode (no configured meters) use only candidates TSV.
+    _meters_list     = data.get("meters", [])
+    _candidates_list = data.get("candidates", [])
+    _in_decode_mode  = len(_meters_list) > 0
+    if _in_decode_mode:
+        total_60m = sum(safe_int(m.get("seen_60m")) for m in _meters_list)
+    else:
+        total_60m = sum(safe_int(c.get("seen_60m")) for c in _candidates_list)
     import time as _time
     bridge_start_epoch = 0
     try:
@@ -864,12 +874,14 @@ def status_model(data: dict) -> dict:
     # bridge.sh subscribes to wmbus/+/diag/summary in background and writes
     # each payload to status_esp_diag.json with a _bridge_rx_epoch timestamp.
     # ESP publishes every 60 s; "total" = exact telegram count in that window —
-    # the ground truth. Falls back to own counting when absent or stale (>90 s).
+    # the ground truth. Falls back to own counting when absent or stale.
+    # Threshold is 150 s (2.5× the typical 60 s publish interval) so a single
+    # delayed/missed publish does not immediately fall back to the bridge calc.
     rate_source = "bridge"
     esp_diag = read_json(STATUS_ESP_DIAG_JSON)
     if esp_diag:
         esp_rx_epoch = safe_int(esp_diag.get("_bridge_rx_epoch", 0))
-        if esp_rx_epoch > 0 and (_time.time() - esp_rx_epoch) <= 90:
+        if esp_rx_epoch > 0 and (_time.time() - esp_rx_epoch) <= 150:
             esp_total = safe_int(esp_diag.get("total", 0))
             rate_current_min = esp_total
             rate_source = "esp"

@@ -504,10 +504,21 @@
     // makes candidate/meter bars nearly invisible while rate bar shows 100%.
     const countMax = Math.max(Number(model.candidate_count || 0), Number(model.meter_count || 0), 1);
     const rateMax  = Math.max(Number(model.raw_per_min || 0), 1);
-    // Rate source badge (#9)
+    // Rate source badge
     const rateSource = model.rate_source || "bridge";
     const srcIcon  = rateSource === "esp" ? "📡" : "⚙";
     const srcColor = rateSource === "esp" ? "#00bcd4" : "#607a88";
+    // In decode mode raw_per_min is computed from meters TSV (decoded telegrams),
+    // not from candidates TSV (which is stale). Label reflects this.
+    const inDecodeMode = Number(model.meter_count || 0) > 0;
+    const rateLabel = inDecodeMode
+      ? t("decoded_per_min_metric", "Decoded / min")
+      : t("telegrams_per_min_metric", "Telegrams / min");
+    const rateSuffix = rateSource === "esp"
+      ? `${srcIcon} ESP 60s`
+      : inDecodeMode
+        ? t("rate_decoded_avg_label", "session avg (decoded)")
+        : t("rate_session_avg_label", "60 min avg");
 
     return `
       <section class="section">
@@ -538,8 +549,7 @@
           <div class="stats-bars">
             ${statsRow("candidate", t("detected_candidates", "Detected candidates"), model.candidate_count || 0, model.candidate_count || 0, countMax)}
             ${statsRow("meter", t("configured_meters", "Configured meters"), model.meter_count || 0, model.meter_count || 0, countMax)}
-            ${statsRow("rate", t("telegrams_per_min_metric", "Telegrams / min"), model.raw_per_min || 0, model.raw_per_min || 0, rateMax,
-              rateSource === "esp" ? `${srcIcon} ESP 60s` : t("rate_session_avg_label", "60 min avg"))}
+            ${statsRow("rate", rateLabel, model.raw_per_min || 0, model.raw_per_min || 0, rateMax, rateSuffix)}
           </div>
         </div>
       </section>
@@ -594,7 +604,7 @@
             <span>${recentCandidates.length} ${escapeHtml(t("webui_shown", "shown"))}</span>
           </div>
           ${Number(model.meter_count || 0) > 0
-            ? `<div style="font-size:11px;color:#607a88;margin-bottom:8px;">📡 ${escapeHtml(t("raw_signal_note_short", "Decode mode — counts are raw MQTT signal, not decoded"))}</div>`
+            ? `<div style="font-size:11px;color:#607a88;margin-bottom:8px;">🕐 ${escapeHtml(t("raw_signal_note_short", "Decode mode — data is stale from previous listen session"))}</div>`
             : ""}
           ${candidateTable(recentCandidates, false)}
         </div>
@@ -667,9 +677,9 @@
     // analysis is keyed by meter ID
     const analysis = (state.data || {}).analysis || {};
     const decodeMode = Number(((state.data || {}).model || {}).meter_count || 0) > 0;
-    // In decode mode the 15m/60m columns reflect raw MQTT (physical layer) not wmbusmeters output
+    // In decode mode the 15m/60m columns are STALE — bridge.sh only updates candidates when meter_count==0
     const rawTip = decodeMode
-      ? ` title="${escapeHtml(t("raw_signal_col_tip", "Raw MQTT signal count — physical layer, not wmbusmeters decoded"))}" style="cursor:help;border-bottom:1px dashed #607a88;"`
+      ? ` title="${escapeHtml(t("raw_signal_col_tip", "Stale data from previous listen session — not updated in decode mode"))}" style="cursor:help;border-bottom:1px dashed #607a88;"`
       : "";
     return `
       <div class="table-wrap">
@@ -813,10 +823,10 @@
     const decodeMode = Number(model.meter_count || 0) > 0;
     const rawSignalNote = decodeMode ? `
       <div class="notice" style="margin-bottom:12px;display:flex;gap:10px;align-items:flex-start;">
-        <span style="font-size:16px;flex-shrink:0;">📡</span>
+        <span style="font-size:16px;flex-shrink:0;">🕐</span>
         <div>
-          <strong>${escapeHtml(t("decode_mode_label", "Decode mode active"))}</strong>
-          <div style="font-size:11px;color:#9eafba;margin-top:2px;">${escapeHtml(t("raw_signal_note", "wmbusmeters is decoding configured meters only. The 15m / 60m / Interval columns below reflect raw MQTT signal counts from the physical layer — not wmbusmeters decoded output."))}</div>
+          <strong>${escapeHtml(t("decode_mode_label", "Decode mode — candidate data is from previous listen session"))}</strong>
+          <div style="font-size:11px;color:#9eafba;margin-top:2px;">${escapeHtml(t("raw_signal_note", "wmbusmeters is processing configured meters only and no longer updates candidate statistics. The values below (15m / 60m / Interval) are from the previous LISTEN session and are NOT being updated in real time."))}</div>
         </div>
       </div>` : "";
     return `
