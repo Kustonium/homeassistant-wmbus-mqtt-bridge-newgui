@@ -574,10 +574,79 @@
     `;
   }
 
+  function pendingMetersSection(rows, analysis) {
+    // Encryption badge from candidate analysis
+    const encBadge = (enc, note) => {
+      if (!enc) return `<span class="pill muted" title="${escapeHtml(t("enc_unknown", "Not yet analyzed"))}">?</span>`;
+      const bad  = ["encrypted", "aes_required", "aes"].includes(enc);
+      const good = ["not_encrypted", "no_aes", "plain", "unencrypted"].includes(enc);
+      const label = bad ? "AES req." : good ? "no AES" : enc;
+      const cls   = bad ? "bad"      : good ? "ok"     : "muted";
+      const title = note ? ` title="${escapeHtml(note)}"` : "";
+      return `<span class="pill ${cls}"${title}>${escapeHtml(label)}</span>`;
+    };
+    return `
+      <div style="margin-top:20px;">
+        <div class="section-head" style="margin-bottom:4px;">
+          <h3 style="font-size:13px;color:#9eafba;margin:0;">
+            ⏳ ${escapeHtml(t("waiting_for_telegrams_title", "Waiting for first telegram"))}
+          </h3>
+          <span>${rows.length}</span>
+        </div>
+        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("waiting_for_telegrams_text", "These meters are configured but haven't sent a telegram yet."))}</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>${escapeHtml(t("webui_id", "ID"))}</th>
+                <th>${escapeHtml(t("driver", "Driver"))}</th>
+                <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
+                <th>${escapeHtml(t("aes_key_label", "AES key"))}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(m => {
+                const mid    = String(m.meter_id || "").toLowerCase();
+                const type   = m.type === "other" ? (m.type_other || "other") : (m.type || "auto");
+                const hasKey = !!(m.key && m.key.trim());
+                // analysis keyed by id as written by bridge.sh (may be lowercase or uppercase)
+                const a   = analysis[mid] || analysis[mid.toUpperCase()] || {};
+                const enc = String(a.encryption || "").toLowerCase();
+                const note = String(a.note || "");
+                return `
+                  <tr>
+                    <td><strong>${escapeHtml(mid)}</strong></td>
+                    <td style="color:#9eafba;font-size:12px;">${escapeHtml(type)}</td>
+                    <td>${encBadge(enc, note)}</td>
+                    <td>${hasKey
+                      ? `<span class="pill ok">✓ set</span>`
+                      : `<span class="pill muted">${escapeHtml(t("no_key", "No key"))}</span>`}
+                    </td>
+                    <td><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(mid)}">${escapeHtml(t("webui_remove", "Remove"))}</button></td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
   function metersPage() {
     const data = state.data || {};
     const all = asArray(data.meters);
     const filtered = applyMediaFilter(all, "media");
+
+    // Pending = in options.json but not yet decoded (not in status_meters.tsv)
+    const knownIds  = new Set(all.map(m => String(m.id || "").toLowerCase()));
+    const optMeters = asArray((data.options || {}).meters);
+    const pending   = optMeters.filter(m => {
+      const mid = String(m.meter_id || "").toLowerCase();
+      return mid && !knownIds.has(mid);
+    });
+
     return `
       <section class="section">
         <div class="section-head">
@@ -586,6 +655,7 @@
         </div>
         ${filterChips()}
         ${meterTable(filtered, true)}
+        ${pending.length ? pendingMetersSection(pending, data.analysis || {}) : ""}
       </section>
     `;
   }
