@@ -538,7 +538,8 @@
           <div class="stats-bars">
             ${statsRow("candidate", t("detected_candidates", "Detected candidates"), model.candidate_count || 0, model.candidate_count || 0, countMax)}
             ${statsRow("meter", t("configured_meters", "Configured meters"), model.meter_count || 0, model.meter_count || 0, countMax)}
-            ${statsRow("rate", t("telegrams_per_min_metric", "Telegrams / min"), model.raw_per_min || 0, model.raw_per_min || 0, rateMax, t("rate_session_avg_label", "60 min avg"))}
+            ${statsRow("rate", t("telegrams_per_min_metric", "Telegrams / min"), model.raw_per_min || 0, model.raw_per_min || 0, rateMax,
+              rateSource === "esp" ? `${srcIcon} ESP 60s` : t("rate_session_avg_label", "60 min avg"))}
           </div>
         </div>
       </section>

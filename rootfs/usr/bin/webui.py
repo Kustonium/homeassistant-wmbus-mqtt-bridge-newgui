@@ -870,8 +870,13 @@ def status_model(data: dict) -> dict:
     if esp_diag:
         esp_rx_epoch = safe_int(esp_diag.get("_bridge_rx_epoch", 0))
         if esp_rx_epoch > 0 and (_time.time() - esp_rx_epoch) <= 90:
-            rate_current_min = safe_int(esp_diag.get("total", rate_current_min))
+            esp_total = safe_int(esp_diag.get("total", 0))
+            rate_current_min = esp_total
             rate_source = "esp"
+            # ESP total = exact count in the last 60-second window = telegrams/min.
+            # Override raw_per_min so the session-average bar doesn't show an
+            # inflated value from stale TSV counters / short elapsed_min at startup.
+            raw_per_min = float(esp_total)
 
     # Pending restart: options.json is newer than status.json — user saved
     # settings but the add-on has not restarted yet to pick them up.
