@@ -440,7 +440,7 @@ I18N: dict[str, dict[str, str]] = {
         "search_discover_title": "Szukaj / Wykrywaj",
         "search_discover_sub": "Faza 1: zbieranie kandydat\u00f3w \u2192 Faza 2: szukanie po wskazaniu. Sekwencyjne etapy, nie r\u00f3wnoleg\u0142e.",
         "no_candidates_listen": "Brak wykrytych kandydat\u00f3w. Bridge nas\u0142uchuje w LISTEN mode.",
-        "best_candidate": "Best candidate",
+        "best_candidate": "S\u0142yszane liczniki",
         "full_list_in_discover": "Pe\u0142na lista, sortowanie i akcje s\u0105 w Search / Discover.",
         "saves_via_supervisor": "saves via Supervisor API + auto-restart",
         "accepted_formats": "Akceptowane: 22.907 i 22,907.",

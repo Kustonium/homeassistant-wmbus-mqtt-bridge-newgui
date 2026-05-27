@@ -591,21 +591,19 @@
       ${pendingRestartBanner()}
       ${statsPanel(model)}
 
-      <section class="section grid two">
+      <section class="section ${Number(model.meter_count || 0) === 0 ? "grid two" : ""}">
         <div>
           <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${recentMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
           ${meterTable(recentMeters, false)}
         </div>
+        ${Number(model.meter_count || 0) === 0 ? `
         <div>
           <div class="section-head">
             <h2>${escapeHtml(t("webui_top_candidates", "Top candidates"))}</h2>
             <span>${recentCandidates.length} ${escapeHtml(t("webui_shown", "shown"))}</span>
           </div>
-          ${Number(model.meter_count || 0) > 0
-            ? `<div style="font-size:11px;color:#607a88;margin-bottom:8px;">🕐 ${escapeHtml(t("raw_signal_note_short", "Decode mode — data is stale from previous listen session"))}</div>`
-            : ""}
           ${candidateTable(recentCandidates, false)}
-        </div>
+        </div>` : ""}
       </section>
 
       <section class="section">
