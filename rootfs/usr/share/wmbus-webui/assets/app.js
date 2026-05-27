@@ -482,7 +482,13 @@
             </div>
           </header>
           <div class="content">
-            ${state.error ? `<div class="empty">${escapeHtml(state.error)}</div>` : content}
+            ${state.restarting
+              ? `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:80px 20px;gap:16px;">
+                   <div style="font-size:36px;">🔄</div>
+                   <div style="font-size:18px;font-weight:700;color:#f3c84b;">${escapeHtml(t("restarting_title", "Restarting add-on…"))}</div>
+                   <div style="font-size:13px;color:#9eafba;">${escapeHtml(t("restarting_text", "Waiting for the add-on to come back online. This may take 10–30 seconds."))}</div>
+                 </div>`
+              : state.error ? `<div class="empty">${escapeHtml(state.error)}</div>` : content}
           </div>
         </main>
       </div>
@@ -1397,12 +1403,38 @@
 
     if (action === "restart") {
       if (!window.confirm(t("webui_restart_confirm", "Restart the Home Assistant add-on?"))) return;
+      // Send restart request. A 502/network error is expected — the add-on goes down.
+      // Treat any response (or connection drop) as "restarting", then poll until back.
       try {
-        const result = await postApi("restart-bridge", {});
-        toast(result.message || "Restart requested.");
-      } catch (error) {
-        toast(error.message, true);
+        await postApi("restart-bridge", {});
+      } catch (_) {
+        // 502 / network error is expected when the add-on shuts down — not a real error.
       }
+      // Enter restarting state: show overlay, close SSE stream, poll for recovery.
+      state.restarting = true;
+      state.liveConnected = false;
+      if (liveSource) { liveSource.close(); liveSource = null; }
+      render();
+      (async () => {
+        const start = Date.now();
+        const MAX_WAIT = 90_000; // 90 s timeout
+        while (Date.now() - start < MAX_WAIT) {
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const resp = await fetch("api/status", {cache: "no-store"});
+            if (resp.ok) {
+              state.restarting = false;
+              await fetchData(currentLang());
+              toast(t("restart_done", "Add-on restarted successfully."));
+              return;
+            }
+          } catch (_) { /* still down — keep polling */ }
+        }
+        // Timeout — give up and let user refresh manually.
+        state.restarting = false;
+        state.error = t("restart_timeout", "Add-on did not come back in 90 s — refresh the page manually.");
+        render();
+      })();
     }
   });
 
