@@ -890,13 +890,16 @@ def status_model(data: dict) -> dict:
             # inflated value from stale TSV counters / short elapsed_min at startup.
             raw_per_min = float(esp_total)
 
-    # Pending restart: options.json is newer than status.json — user saved
-    # settings but the add-on has not restarted yet to pick them up.
+    # Pending restart: options.json is newer than status_bridge_start.txt.
+    # status_bridge_start.txt is written ONCE when bridge.sh starts, so its mtime
+    # is stable and reliable. status.json is rewritten every few seconds by bridge.sh,
+    # making opts > status.json comparison unreliable (options.json appears "old"
+    # within seconds of being written).
     pending_restart = False
     try:
-        opts_mtime   = OPTIONS_JSON.stat().st_mtime
-        status_mtime = STATUS_JSON.stat().st_mtime
-        pending_restart = opts_mtime > status_mtime
+        opts_mtime         = OPTIONS_JSON.stat().st_mtime
+        bridge_start_mtime = STATUS_BRIDGE_START_FILE.stat().st_mtime
+        pending_restart    = opts_mtime > bridge_start_mtime
     except OSError:
         pass
 
