@@ -574,12 +574,17 @@ fi
 STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
 (
   while true; do
-    ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/summary" -W 90 2>/dev/null \
-      | while IFS= read -r _diag_line; do
+    # -F '%t\t%p' = "topic<TAB>payload" so we can record which ESP device sent
+    # the summary. The topic segment between wmbus/ and /diag/summary is the
+    # ESP device name (e.g. "esphome-wmbus-tx-lilygo"). webui.py uses _topic
+    # to display the source in the Pipeline ESP node and to detect when more
+    # than one ESP is publishing.
+    ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" -t "wmbus/+/diag/summary" -F '%t\t%p' -W 90 2>/dev/null \
+      | while IFS=$'\t' read -r _diag_topic _diag_line; do
           [[ -n "${_diag_line}" ]] || continue
           _ts="$(date +%s 2>/dev/null || echo 0)"
           printf '%s\n' "${_diag_line}" \
-            | jq --argjson t "${_ts}" '. + {_bridge_rx_epoch: $t}' 2>/dev/null \
+            | jq --argjson t "${_ts}" --arg topic "${_diag_topic:-}" '. + {_bridge_rx_epoch: $t, _topic: $topic}' 2>/dev/null \
             > "${STATUS_ESP_DIAG_FILE}.tmp" \
             && mv "${STATUS_ESP_DIAG_FILE}.tmp" "${STATUS_ESP_DIAG_FILE}" 2>/dev/null \
             || true

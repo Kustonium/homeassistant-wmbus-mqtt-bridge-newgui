@@ -837,6 +837,55 @@ def status_model(data: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────
 
 
+def _esp_payload() -> dict:
+    """Assemble the ESP section of /api/app.
+
+    Apart from the existing diag/suggestion/boot/events, also derives a list
+    of distinct ESP devices by extracting the second URI segment of every
+    ESP event topic (wmbus/<device>/diag/...). Lets the WebGUI render a
+    multi-ESP badge in the Pipeline ESP node when more than one receiver
+    is publishing into the same bridge.
+    """
+    diag       = read_json(STATUS_ESP_DIAG_JSON)
+    suggestion = read_json(STATUS_ESP_SUGGESTION_FILE)
+    boot       = read_json(STATUS_ESP_BOOT_FILE)
+    events     = read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True)
+
+    # Build per-device summary from the recent events. For each distinct
+    # device segment, keep the most recent event epoch + topic + last
+    # summary payload so the WebGUI can show "N × ESP" with a per-device
+    # drill-down list.
+    devices: dict[str, dict] = {}
+    for ev in events:
+        topic = (ev.get("topic") or "").strip()
+        parts = topic.split("/")
+        if len(parts) < 3 or parts[0] != "wmbus":
+            continue
+        dev = parts[1]
+        if not dev:
+            continue
+        epoch = safe_int(ev.get("epoch"))
+        prev = devices.get(dev)
+        if prev is None or epoch > safe_int(prev.get("last_seen_epoch")):
+            devices[dev] = {
+                "name": dev,
+                "topic": topic,
+                "last_seen_epoch": epoch,
+                "last_evtype": ev.get("evtype") or "",
+            }
+
+    devices_list = sorted(devices.values(), key=lambda d: d.get("last_seen_epoch", 0), reverse=True)
+
+    return {
+        "diag": diag,
+        "suggestion": suggestion,
+        "boot": boot,
+        "events": events,
+        "devices": devices_list,
+        "devices_count": len(devices_list),
+    }
+
+
 def frontend_payload(lang: str = DEFAULT_LANG, include_i18n: bool = True) -> dict:
     """Return the data contract used by the static WebGUI."""
     data = state()
@@ -850,12 +899,7 @@ def frontend_payload(lang: str = DEFAULT_LANG, include_i18n: bool = True) -> dic
         },
         "model": status_model(data),
         "search_config": search_config_model(data),
-        "esp": {
-            "diag": read_json(STATUS_ESP_DIAG_JSON),
-            "suggestion": read_json(STATUS_ESP_SUGGESTION_FILE),
-            "boot": read_json(STATUS_ESP_BOOT_FILE),
-            "events": read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True),
-        },
+        "esp": _esp_payload(),
         **data,
     }
     if include_i18n:

@@ -1107,6 +1107,17 @@ tr:last-child td {
   color: var(--quiet);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+/* Device/topic line on the ESP pipeline node — slightly muted, ellipsised
+   when the device name is long. Tooltip carries the full topic. */
+.pipeline-device {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+}
 .pipeline-arrow {
   display: flex;
   flex-direction: column;

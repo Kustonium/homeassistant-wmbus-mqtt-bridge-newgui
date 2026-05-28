@@ -763,14 +763,41 @@
     // fresh diag from ESP (seen recently) → green; nothing → gray-ish "n/a".
     const espOk  = espActive || (esp && Object.keys(esp).length > 0);
     const espRssi = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
+
+    // Multi-ESP support: webui.py exposes esp.devices[] (distinct devices
+    // extracted from event topics) + esp.devices_count. When more than one
+    // ESP publishes into the same bridge we badge the node "N × ESP" so
+    // it's obvious. The most recent device is the "primary" shown below.
+    const espDevices  = asArray((data.esp || {}).devices);
+    const espCount    = Number((data.esp || {}).devices_count || espDevices.length || 0);
+    const isMultiEsp  = espCount > 1;
+    const espTitle    = isMultiEsp ? `${espCount} × ESP` : "ESP";
+
+    // Status text + rate. The rate comes from model.rate_current_min which
+    // status_model() already populates either from ESP's diag.total (when
+    // rate_source=="esp") or from bridge.sh's own per-minute counter.
+    const rateSuffix = cur > 0 ? ` · ${cur}/min` : "";
     const espStatus = espActive
-      ? t("pipeline_esp_active", "active")
-      : (espOk ? t("pipeline_esp_seen", "seen") : t("pipeline_esp_none", "n/a"));
-    // Show candidate count on the ESP node — it's what ESP is currently
-    // putting on the wire, regardless of whether the user has configured
-    // any meters yet. This is what "Słyszane liczniki" used to show on
-    // the separate panel; folding it here removes the duplication.
+      ? t("pipeline_esp_active", "active") + rateSuffix
+      : (espOk ? t("pipeline_esp_seen", "seen") + rateSuffix
+                : t("pipeline_esp_none", "n/a"));
+
+    // Source topic — the device segment of the primary (most recent) ESP.
+    // Falls back to esp.diag._topic if events are empty (e.g. fresh start
+    // with only diag/summary received, no other events yet). The bridge.sh
+    // diag/summary subscriber now records the topic as `_topic` in
+    // status_esp_diag.json. Show in compact form (just device name).
+    const primaryTopic = (espDevices[0] && espDevices[0].topic)
+      || (esp && esp._topic)
+      || "";
+    const topicParts = primaryTopic ? primaryTopic.split("/") : [];
+    const primaryDevice = topicParts.length >= 2 ? topicParts[1] : (primaryTopic || "—");
+
     const espVisibleLine = `${candidateCount} ${t("pipeline_visible_count", "widocznych")} · ${escapeHtml(espRssi)}`;
+    // Compact device line. Multi-ESP: comma-separated names (max 3 visible).
+    const espDeviceLine = isMultiEsp
+      ? espDevices.slice(0, 3).map(d => d.name).join(", ") + (espDevices.length > 3 ? ` +${espDevices.length - 3}` : "")
+      : primaryDevice;
 
     // ─── wmbusmeters node ───
     // "received / decoded" — raw telegram count vs successfully decoded JSON.
@@ -787,9 +814,10 @@
         <div class="pipeline">
           <button class="${cls("esp")}" data-action="open-workspace" data-ws="esp" type="button">
             <div class="pipeline-icon">📡</div>
-            <div class="pipeline-title">ESP</div>
+            <div class="pipeline-title">${escapeHtml(espTitle)}</div>
             <div class="pipeline-meta">${dot(espOk, false, espActive && hasLiveRate)} ${escapeHtml(espStatus)}</div>
             <div class="pipeline-sub">${escapeHtml(espVisibleLine)}</div>
+            <div class="pipeline-sub pipeline-device" title="${escapeHtml(primaryTopic || "")}">${escapeHtml(espDeviceLine)}</div>
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("mqtt")}" data-action="open-workspace" data-ws="mqtt" type="button">
@@ -832,9 +860,43 @@
       const esp = data.esp || {};
       const diag = esp.diag || {};
       const sug  = esp.suggestion || {};
+      const devices = asArray(esp.devices);
       const hasDiag = Object.keys(diag).length > 0;
+      // Multi-device table — one row per ESP receiver heard by the bridge.
+      // Empty if there are no events yet (fresh boot, no diag/events received).
+      const devicesTable = devices.length ? `
+        <h4 style="margin-top:14px;">📡 ${escapeHtml(t("workspace_esp_devices_title", "Connected ESP devices"))}
+          <span style="font-size:11px;color:#8ea4b1;font-weight:400;margin-left:6px;">${devices.length}</span>
+        </h4>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>${escapeHtml(t("workspace_esp_device_name", "Device"))}</th>
+                <th>${escapeHtml(t("workspace_esp_device_topic", "Topic"))}</th>
+                <th>${escapeHtml(t("workspace_esp_device_last_event", "Last event"))}</th>
+                <th>${escapeHtml(t("workspace_esp_device_evtype", "Type"))}</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${devices.map(d => {
+                const epoch = Number(d.last_seen_epoch || 0);
+                const when = epoch > 0 ? new Date(epoch * 1000).toLocaleString() : "—";
+                return `
+                  <tr>
+                    <td><strong>${escapeHtml(d.name || "—")}</strong></td>
+                    <td class="mono" style="font-size:11px;color:#9eafba;">${escapeHtml(d.topic || "—")}</td>
+                    <td style="white-space:nowrap;">${escapeHtml(when)}</td>
+                    <td>${escapeHtml(d.last_evtype || "—")}</td>
+                  </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>` : "";
       body = `
         <h3>📡 ESP — ${escapeHtml(t("workspace_esp_title", "ESP diagnostics"))}</h3>
+        ${devicesTable}
+        <h4 style="margin-top:14px;">${escapeHtml(t("workspace_esp_latest_diag", "Latest diagnostic summary"))}</h4>
         ${hasDiag ? objectKv(diag) : `<div class="empty">${escapeHtml(t("webui_no_diagnostics", "No diagnostic summary."))}</div>`}
         ${Object.keys(sug).length ? `<h4 style="margin-top:14px;">💡 ${escapeHtml(t("webui_suggestion", "Suggestion"))}</h4>${objectKv(sug)}` : ""}
       `;
