@@ -764,14 +764,15 @@
     const espOk  = espActive || (esp && Object.keys(esp).length > 0);
     const espRssi = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
 
-    // Multi-ESP support: webui.py exposes esp.devices[] (distinct devices
-    // extracted from event topics) + esp.devices_count. When more than one
-    // ESP publishes into the same bridge we badge the node "N × ESP" so
-    // it's obvious. The most recent device is the "primary" shown below.
-    const espDevices  = asArray((data.esp || {}).devices);
-    const espCount    = Number((data.esp || {}).devices_count || espDevices.length || 0);
-    const isMultiEsp  = espCount > 1;
-    const espTitle    = isMultiEsp ? `${espCount} × ESP` : "ESP";
+    // Multi-ESP support: webui.py exposes esp.devices[] (each entry carries
+    // an `active` flag set when the device has emitted a summary in the
+    // last 5 min). devices_count holds the ACTIVE count only, so MQTT
+    // retained messages from dead ESPs no longer inflate the badge.
+    const espDevicesAll    = asArray((data.esp || {}).devices);
+    const espActiveDevices = espDevicesAll.filter(d => d && d.active);
+    const espCount         = Number((data.esp || {}).devices_count || espActiveDevices.length || 0);
+    const isMultiEsp       = espCount > 1;
+    const espTitle         = isMultiEsp ? `${espCount} × ESP` : "ESP";
 
     // Status text + rate. The rate comes from model.rate_current_min which
     // status_model() already populates either from ESP's diag.total (when
@@ -787,16 +788,24 @@
     // with only diag/summary received, no other events yet). The bridge.sh
     // diag/summary subscriber now records the topic as `_topic` in
     // status_esp_diag.json. Show in compact form (just device name).
-    const primaryTopic = (espDevices[0] && espDevices[0].topic)
+    // Source topic — most-recent ACTIVE device first. If nothing's active
+    // right now fall back to whatever esp.diag._topic remembers from the
+    // last summary (could be stale but still informative). Final fallback
+    // is the all-devices list (a "ghost" name from MQTT retained).
+    const primaryDeviceObj = espActiveDevices[0] || espDevicesAll[0];
+    const primaryTopic = (primaryDeviceObj && primaryDeviceObj.topic)
       || (esp && esp._topic)
       || "";
     const topicParts = primaryTopic ? primaryTopic.split("/") : [];
     const primaryDevice = topicParts.length >= 2 ? topicParts[1] : (primaryTopic || "—");
 
     const espVisibleLine = `${candidateCount} ${t("pipeline_visible_count", "widocznych")} · ${escapeHtml(espRssi)}`;
-    // Compact device line. Multi-ESP: comma-separated names (max 3 visible).
+    // Compact device line. Multi-ESP: ACTIVE devices only, comma-separated
+    // (max 3 visible). Inactive/ghost devices stay hidden here — they're
+    // shown in the ESP workspace drill-down with a different style.
+    const espDeviceSource = espActiveDevices.length > 0 ? espActiveDevices : espDevicesAll.slice(0, 1);
     const espDeviceLine = isMultiEsp
-      ? espDevices.slice(0, 3).map(d => d.name).join(", ") + (espDevices.length > 3 ? ` +${espDevices.length - 3}` : "")
+      ? espDeviceSource.slice(0, 3).map(d => d.name).join(", ") + (espDeviceSource.length > 3 ? ` +${espDeviceSource.length - 3}` : "")
       : primaryDevice;
 
     // ─── wmbusmeters node ───
@@ -863,15 +872,23 @@
       const devices = asArray(esp.devices);
       const hasDiag = Object.keys(diag).length > 0;
       // Multi-device table — one row per ESP receiver heard by the bridge.
-      // Empty if there are no events yet (fresh boot, no diag/events received).
+      // Active devices first (green dot), then stale "ghost" entries from
+      // MQTT retained messages or past sessions (dimmed grey). Counter in
+      // the header reads "N active / M total" when there are stale entries.
+      const activeDevs = devices.filter(d => d && d.active);
+      const totalDevs  = devices.length;
+      const counter    = (totalDevs > activeDevs.length)
+        ? `${activeDevs.length} / ${totalDevs}`
+        : `${totalDevs}`;
       const devicesTable = devices.length ? `
         <h4 style="margin-top:14px;">📡 ${escapeHtml(t("workspace_esp_devices_title", "Connected ESP devices"))}
-          <span style="font-size:11px;color:#8ea4b1;font-weight:400;margin-left:6px;">${devices.length}</span>
+          <span style="font-size:11px;color:#8ea4b1;font-weight:400;margin-left:6px;">${counter}</span>
         </h4>
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
+                <th>${escapeHtml(t("workspace_esp_device_status", "Status"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_name", "Device"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_topic", "Topic"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_last_event", "Last event"))}</th>
@@ -882,8 +899,14 @@
               ${devices.map(d => {
                 const epoch = Number(d.last_seen_epoch || 0);
                 const when = epoch > 0 ? new Date(epoch * 1000).toLocaleString() : "—";
+                const isAct = !!d.active;
+                const rowStyle = isAct ? "" : "opacity:0.55;";
+                const statusCell = isAct
+                  ? `<span class="dot ok live" style="margin-right:5px;"></span>${escapeHtml(t("pipeline_esp_active", "active"))}`
+                  : `<span class="dot" style="margin-right:5px;"></span>${escapeHtml(t("workspace_esp_device_stale", "stale (retained?)"))}`;
                 return `
-                  <tr>
+                  <tr style="${rowStyle}">
+                    <td style="white-space:nowrap;font-size:11px;">${statusCell}</td>
                     <td><strong>${escapeHtml(d.name || "—")}</strong></td>
                     <td class="mono" style="font-size:11px;color:#9eafba;">${escapeHtml(d.topic || "—")}</td>
                     <td style="white-space:nowrap;">${escapeHtml(when)}</td>
@@ -892,7 +915,8 @@
               }).join("")}
             </tbody>
           </table>
-        </div>` : "";
+        </div>
+        ${totalDevs > activeDevs.length ? `<p style="font-size:11px;color:#8ea4b1;margin:8px 0 0;">⚠ ${escapeHtml(t("workspace_esp_stale_hint", "Stale entries are from MQTT retained messages or past sessions. They don't count toward the active ESP badge."))}</p>` : ""}` : "";
       body = `
         <h3>📡 ESP — ${escapeHtml(t("workspace_esp_title", "ESP diagnostics"))}</h3>
         ${devicesTable}
@@ -1785,12 +1809,27 @@
       .map(dev => `<span class="pill ok" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(dev)}</span>`)
       .join("");
 
+    // Help notice — most users don't realise that ESPHome must have the
+    // diag pipeline enabled for these events to flow. Also call out the
+    // MQTT-retained gotcha: a long-dead ESP can keep its name showing in
+    // the events buffer because the broker replayed its last boot message.
+    const helpNotice = `
+      <div class="notice" style="font-size:11px;color:#9eafba;padding:10px 14px;background:#0e1a23;border:1px dashed #2c4555;border-radius:6px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-start;">
+        <span style="font-size:16px;flex-shrink:0;">📝</span>
+        <div>
+          <strong style="color:#cbd9e1;display:block;margin-bottom:3px;">${escapeHtml(t("esp_diag_required_title", "ESP diagnostics required"))}</strong>
+          <div>${escapeHtml(t("esp_diag_required_text", "These events only appear when diagnostic publishing is enabled in your ESP firmware (ESPHome config). If the table is empty even though telegrams arrive, check the ESP's YAML for the diag/* topics."))}</div>
+          <div style="margin-top:4px;color:#7a8a96;">${escapeHtml(t("esp_diag_retained_hint", "MQTT retained messages may carry forward a name from a device that's no longer publishing — only ESPs with summary events in the last 5 minutes count as active."))}</div>
+        </div>
+      </div>`;
+
     return `
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2>
           <span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadges}</span>
         </div>
+        ${helpNotice}
         ${espEventsTable(events, activeDevices)}
       </section>
       <section class="section">

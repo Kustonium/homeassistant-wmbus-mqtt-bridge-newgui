@@ -840,21 +840,37 @@ def status_model(data: dict) -> dict:
 def _esp_payload() -> dict:
     """Assemble the ESP section of /api/app.
 
-    Apart from the existing diag/suggestion/boot/events, also derives a list
-    of distinct ESP devices by extracting the second URI segment of every
-    ESP event topic (wmbus/<device>/diag/...). Lets the WebGUI render a
-    multi-ESP badge in the Pipeline ESP node when more than one receiver
-    is publishing into the same bridge.
+    Apart from diag/suggestion/boot/events, derives a per-device summary
+    keyed by the topic segment wmbus/<device>/diag/... so the WebGUI can
+    render an "N × ESP" badge in the Pipeline ESP node.
+
+    Liveness rules:
+      - A device is "active" only when it has emitted a summary event in
+        the ACTIVE_WINDOW_S window (5 min — twice the ESP's 60 s heartbeat
+        plus margin).
+      - Boot/meter_window/rx_path alone do NOT make a device active —
+        those can linger in the events buffer or arrive as MQTT-retained
+        messages from devices that no longer publish, leading to false
+        "ghost ESP" counts.
+      - devices_count returned to the frontend is the ACTIVE count only.
+      - devices_total reports all device names seen in the buffer so the
+        drill-down can surface stale entries when the user wants to see
+        what's lingering from MQTT retained / past sessions.
     """
+    import time as _time
+
     diag       = read_json(STATUS_ESP_DIAG_JSON)
     suggestion = read_json(STATUS_ESP_SUGGESTION_FILE)
     boot       = read_json(STATUS_ESP_BOOT_FILE)
     events     = read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True)
 
-    # Build per-device summary from the recent events. For each distinct
-    # device segment, keep the most recent event epoch + topic + last
-    # summary payload so the WebGUI can show "N × ESP" with a per-device
-    # drill-down list.
+    ACTIVE_WINDOW_S = 5 * 60
+    now_epoch       = int(_time.time())
+    SUMMARY_TYPES   = {"summary", "summary_15min", "summary_60min"}
+
+    # Per-device aggregation. For each distinct device segment we track:
+    #   - latest event of ANY type (for last_seen / last_evtype)
+    #   - latest summary epoch (for the active flag — only summaries count)
     devices: dict[str, dict] = {}
     for ev in events:
         topic = (ev.get("topic") or "").strip()
@@ -865,16 +881,33 @@ def _esp_payload() -> dict:
         if not dev:
             continue
         epoch = safe_int(ev.get("epoch"))
-        prev = devices.get(dev)
-        if prev is None or epoch > safe_int(prev.get("last_seen_epoch")):
-            devices[dev] = {
-                "name": dev,
-                "topic": topic,
-                "last_seen_epoch": epoch,
-                "last_evtype": ev.get("evtype") or "",
-            }
+        evtype = ev.get("evtype") or ""
+        entry = devices.setdefault(dev, {
+            "name": dev,
+            "topic": topic,
+            "last_seen_epoch": 0,
+            "last_evtype": "",
+            "last_summary_epoch": 0,
+        })
+        if epoch > entry["last_seen_epoch"]:
+            entry["last_seen_epoch"] = epoch
+            entry["last_evtype"] = evtype
+            entry["topic"] = topic
+        if evtype in SUMMARY_TYPES and epoch > entry["last_summary_epoch"]:
+            entry["last_summary_epoch"] = epoch
 
-    devices_list = sorted(devices.values(), key=lambda d: d.get("last_seen_epoch", 0), reverse=True)
+    # Set the active flag and split into active / inactive lists.
+    for entry in devices.values():
+        last_sum = entry.get("last_summary_epoch", 0)
+        entry["active"] = bool(last_sum > 0 and (now_epoch - last_sum) <= ACTIVE_WINDOW_S)
+
+    # Sort: active first (by recency), then inactive (by recency). Stale
+    # "ghost ESP" entries from MQTT retained messages drift to the bottom.
+    devices_list = sorted(
+        devices.values(),
+        key=lambda d: (not d["active"], -d["last_seen_epoch"]),
+    )
+    devices_active_count = sum(1 for d in devices_list if d["active"])
 
     return {
         "diag": diag,
@@ -882,7 +915,10 @@ def _esp_payload() -> dict:
         "boot": boot,
         "events": events,
         "devices": devices_list,
-        "devices_count": len(devices_list),
+        # devices_count = ACTIVE only (used by Pipeline badge "N × ESP").
+        # devices_total = all distinct names seen (for drill-down stats).
+        "devices_count": devices_active_count,
+        "devices_total": len(devices_list),
     }
 
 
