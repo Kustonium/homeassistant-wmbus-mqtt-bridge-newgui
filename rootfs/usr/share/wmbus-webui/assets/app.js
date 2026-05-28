@@ -1226,9 +1226,24 @@
 
   function logsPage() {
     const data = state.data || {};
+    // Legend ported from old webui page_logs: explains what "RAW" and
+    // "candidate" entries mean in the event stream, plus a color key
+    // matching the new event-level CSS classes (ok / warn / candidate /
+    // error). Helps users read the log without having to learn the
+    // colour code by trial and error.
     return `
       <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("webui_runtime_events", "Runtime events"))}</h2><span>${asArray(data.events).length} ${escapeHtml(t("webui_rows", "rows"))}</span></div>
+        <div style="margin-bottom:12px;padding:10px 14px;border:1px dashed #2c4555;border-radius:8px;color:#9eafba;font-size:12px;display:grid;gap:6px;">
+          <div><b style="color:#cbd9e1;">${escapeHtml(t("webui_legend", "Legend"))}:</b></div>
+          <div>${escapeHtml(t("raw_legend", "RAW telegram received = raw HEX frame arrived from MQTT."))}</div>
+          <div>${escapeHtml(t("candidate_legend", "candidate = meter detected in LISTEN/SEARCH, but not configured in meters[]."))}</div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:4px;">
+            <span><span style="display:inline-block;width:8px;height:8px;background:#2de36f;border-radius:50%;margin-right:5px;"></span>ok</span>
+            <span><span style="display:inline-block;width:8px;height:8px;background:#f3c84b;border-radius:50%;margin-right:5px;"></span>warn / candidate</span>
+            <span><span style="display:inline-block;width:8px;height:8px;background:#ff646b;border-radius:50%;margin-right:5px;"></span>error</span>
+          </div>
+        </div>
         ${eventsList(asArray(data.events))}
       </section>
     `;
