@@ -637,7 +637,17 @@ button {
   height: 8px;
   border-radius: 50%;
   background: var(--quiet);
+  display: inline-block;
+  flex-shrink: 0;
 }
+
+/* Standalone .dot.{ok,warn,bad} — used inside pipeline nodes and other
+   places where we want a coloured status dot WITHOUT a surrounding .pill. */
+.dot.ok       { background: var(--good); }
+.dot.warn     { background: var(--warn); }
+.dot.bad      { background: var(--bad); }
+/* Soft glow when the dot signals a healthy live stream. */
+.dot.ok.live  { box-shadow: 0 0 6px rgba(66, 198, 129, 0.65); }
 
 .pill.ok .dot {
   background: var(--good);

@@ -4,7 +4,7 @@
   const navItems = [
     ["dashboard", "nav_dashboard", "DB"],
     ["meters", "nav_meters", "MT"],
-    ["discover", "nav_discover", "DS"],
+    ["discover", "nav_discover", "RX"],
     // Legacy SEARCH mode hidden from nav — its main use-case (find your meter
     // by matching expected m³) is now covered by the Discover page's
     // "Filter by value" input + always-on parallel LISTEN. searchPage()
@@ -740,20 +740,47 @@
     const pipe = model.pipe || {};
     const mqtt = model.mqtt || {};
     const esp  = (data.esp || {}).diag || {};
-    const espActive = Number(model.rate_source === "esp");
+    const espActive = model.rate_source === "esp";
     const cur  = Number(model.rate_current_min || 0);
     const rateLabel = `${cur}/min`;
 
     const cls = (active) => state.workspace === active ? "pipeline-node active" : "pipeline-node";
-    const dot = (ok, warn) => `<span class="dot ${ok ? "ok" : (warn ? "warn" : "bad")}"></span>`;
+    // .dot.ok = green, .dot.warn = yellow, .dot.bad = red (CSS standalone rules)
+    // "live" adds a soft glow to signal real-time activity (rate > 0).
+    const dot = (ok, warn, live) => {
+      const cls = ok ? (live ? "ok live" : "ok") : (warn ? "warn" : "bad");
+      return `<span class="dot ${cls}"></span>`;
+    };
 
-    // ESP node — green when we have fresh diag, gray when no ESP / fallback to bridge
-    const espOk = espActive || (esp && Object.keys(esp).length > 0);
-    const espRssi = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
-
-    // wmbus shows both DECODE and LISTEN status compactly
     const meterCount     = Number(model.meter_count || 0);
     const candidateCount = Number(model.candidate_count || 0);
+    const rawCount       = Number(model.raw_count || 0);
+    const decodedCount   = Number(model.decoded_count || 0);
+    const hasLiveRate    = cur > 0;
+
+    // ─── ESP node ───
+    // Status priority: ESP confirmed active (rate_source=="esp") → green live;
+    // fresh diag from ESP (seen recently) → green; nothing → gray-ish "n/a".
+    const espOk  = espActive || (esp && Object.keys(esp).length > 0);
+    const espRssi = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
+    const espStatus = espActive
+      ? t("pipeline_esp_active", "active")
+      : (espOk ? t("pipeline_esp_seen", "seen") : t("pipeline_esp_none", "n/a"));
+    // Show candidate count on the ESP node — it's what ESP is currently
+    // putting on the wire, regardless of whether the user has configured
+    // any meters yet. This is what "Słyszane liczniki" used to show on
+    // the separate panel; folding it here removes the duplication.
+    const espVisibleLine = `${candidateCount} ${t("pipeline_visible_count", "widocznych")} · ${escapeHtml(espRssi)}`;
+
+    // ─── wmbusmeters node ───
+    // "received / decoded" — raw telegram count vs successfully decoded JSON.
+    // The ratio tells the user how much of the air is actually their meters.
+    const wmbusLine = `${rawCount} / ${decodedCount}`;
+    const wmbusLabel = meterCount > 0
+      ? t("pipeline_wmbus_dec_list", "DEC + LIST")  // both instances run
+      : t("pipeline_wmbus_listen_only", "LISTEN");   // single instance, no decode targets yet
+    const wmbusOk = !!model.wmbus_ok;
+    const wmbusWarn = candidateCount > 0 && meterCount === 0;  // hearing but nothing configured
 
     return `
       <section class="section">
@@ -761,29 +788,29 @@
           <button class="${cls("esp")}" data-action="open-workspace" data-ws="esp" type="button">
             <div class="pipeline-icon">📡</div>
             <div class="pipeline-title">ESP</div>
-            <div class="pipeline-meta">${dot(espOk, false)} ${espActive ? "active" : (espOk ? "seen" : "n/a")}</div>
-            <div class="pipeline-sub">${escapeHtml(espRssi)}</div>
+            <div class="pipeline-meta">${dot(espOk, false, espActive && hasLiveRate)} ${escapeHtml(espStatus)}</div>
+            <div class="pipeline-sub">${escapeHtml(espVisibleLine)}</div>
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("mqtt")}" data-action="open-workspace" data-ws="mqtt" type="button">
             <div class="pipeline-icon">📨</div>
             <div class="pipeline-title">MQTT</div>
-            <div class="pipeline-meta">${dot(!!model.mqtt_ok, false)} ${model.mqtt_ok ? "online" : "offline"}</div>
+            <div class="pipeline-meta">${dot(!!model.mqtt_ok, false, !!model.mqtt_ok && hasLiveRate)} ${escapeHtml(model.mqtt_ok ? t("pipeline_mqtt_online", "online") : t("pipeline_mqtt_offline", "offline"))}</div>
             <div class="pipeline-sub">${escapeHtml((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))}</div>
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("wmbus")}" data-action="open-workspace" data-ws="wmbus" type="button">
             <div class="pipeline-icon">⚙</div>
             <div class="pipeline-title">wmbusmeters</div>
-            <div class="pipeline-meta">${dot(!!model.wmbus_ok, candidateCount > 0 && meterCount === 0)} DEC | LIST</div>
-            <div class="pipeline-sub">${meterCount} / ${candidateCount}</div>
+            <div class="pipeline-meta">${dot(wmbusOk, wmbusWarn, wmbusOk && hasLiveRate)} ${escapeHtml(wmbusLabel)}</div>
+            <div class="pipeline-sub" title="${escapeHtml(t("pipeline_wmbus_tooltip", "received / decoded"))}">${escapeHtml(wmbusLine)}</div>
           </button>
           <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
           <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
             <div class="pipeline-icon">🏠</div>
             <div class="pipeline-title">HA</div>
-            <div class="pipeline-meta">${dot(!!model.discovery_ok, false)} ${model.discovery_ok ? "✓" : "—"}</div>
-            <div class="pipeline-sub">${meterCount} entit.</div>
+            <div class="pipeline-meta">${dot(!!model.discovery_ok, meterCount === 0, !!model.discovery_ok)} ${escapeHtml(model.discovery_ok ? t("pipeline_ha_published", "published") : t("pipeline_ha_pending", "pending"))}</div>
+            <div class="pipeline-sub">${meterCount} ${escapeHtml(t("pipeline_ha_entities_short", "entit."))}</div>
           </button>
         </div>
         ${pipelineWorkspace(model)}
@@ -980,7 +1007,8 @@
     const data = state.data || {};
     const model = data.model || {};
     const recentMeters = asArray(data.meters).slice(0, 6);
-    const recentCandidates = asArray(data.candidates).slice(0, 6);
+    const meterCount = Number(model.meter_count || 0);
+    const candidateCount = Number(model.candidate_count || 0);
 
     // Pending = in options.json but not yet decoded (same logic as metersPage)
     const decodedIds = new Set(asArray(data.meters).map(m => String(m.id || "").toLowerCase()));
@@ -994,26 +1022,42 @@
       ? dashboardStatsView(model)
       : pipelineHeader(model);
 
+    // When the user has no configured meters yet, the meters table would
+    // be empty and we'd be showing the candidates table separately — which
+    // duplicates the Discover (Odbierane) page. Instead show a single CTA
+    // pointing the user to Odbierane so adding the first meter is one click
+    // away. After meters are configured, this section shows them.
+    const metersSection = meterCount === 0
+      ? `
+        <section class="section">
+          <div class="empty" style="display:flex;flex-direction:column;align-items:center;gap:12px;padding:30px 20px;text-align:center;">
+            <span style="font-size:32px;">📡</span>
+            <div>
+              <strong style="color:#cbd9e1;display:block;margin-bottom:4px;">${escapeHtml(t("dashboard_no_meters_title", "No configured meters yet"))}</strong>
+              <div style="font-size:12px;color:#8ea4b1;">
+                ${candidateCount > 0
+                  ? escapeHtml(t("dashboard_no_meters_with_candidates", "We're hearing {n} IDs in the air. Go to Received / Search to identify and add yours.").replace("{n}", String(candidateCount)))
+                  : escapeHtml(t("dashboard_no_meters_idle", "Waiting for telegrams. Make sure your ESP receiver is publishing to the configured MQTT topic."))}
+              </div>
+            </div>
+            <a href="#discover" class="btn primary" style="text-decoration:none;">
+              ${escapeHtml(t("dashboard_go_to_discover", "Go to Received / Search"))} →
+            </a>
+          </div>
+        </section>`
+      : `
+        <section class="section">
+          <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${recentMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
+          ${meterTable(recentMeters, false)}
+        </section>`;
+
     return `
       ${dashboardViewToggle()}
       ${topSection}
 
       ${dashboardPendingPanel(pending, model, data.analysis || {})}
 
-      <section class="section ${Number(model.meter_count || 0) === 0 ? "grid two" : ""}">
-        <div>
-          <div class="section-head"><h2>${escapeHtml(t("webui_recent_meters", "Recent meters"))}</h2><span>${recentMeters.length} ${escapeHtml(t("webui_shown", "shown"))}</span></div>
-          ${meterTable(recentMeters, false)}
-        </div>
-        ${Number(model.meter_count || 0) === 0 ? `
-        <div>
-          <div class="section-head">
-            <h2>${escapeHtml(t("webui_top_candidates", "Top candidates"))}</h2>
-            <span>${recentCandidates.length} ${escapeHtml(t("webui_shown", "shown"))}</span>
-          </div>
-          ${candidateTable(recentCandidates, false)}
-        </div>` : ""}
-      </section>
+      ${metersSection}
 
       <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("recent_events_title", "Recent events"))}</h2><span>${asArray(data.events).length} ${escapeHtml(t("webui_total", "total"))}</span></div>
