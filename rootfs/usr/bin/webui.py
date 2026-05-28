@@ -50,6 +50,11 @@ STATUS_ESP_BOOT_FILE = BASE / "status_esp_boot.json"
 # Per-candidate preview values written by bridge.sh's parallel LISTEN instance
 # when it has a meter-preview-<id> file in LISTEN_BASE/etc/wmbusmeters.d/.
 STATUS_CANDIDATE_VALUES_FILE = BASE / "status_candidate_values.tsv"
+# Per-ESP-device telegram tracking — written by bridge.sh's background
+# subscriber listening to RAW_TOPIC. The PRIMARY source of truth for which
+# ESPs are publishing live (works without ESPHome diagnostics enabled).
+# Format: device<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
+STATUS_ESP_TELEGRAM_DEVICES_FILE = BASE / "status_esp_telegram_devices.tsv"
 # LISTEN-only config dir — separate from /data/etc which holds the user's
 # permanent meters. Preview files go here so they affect only the LISTEN
 # instance (decode pipeline reads /data/etc/wmbusmeters.d/).
@@ -840,22 +845,21 @@ def status_model(data: dict) -> dict:
 def _esp_payload() -> dict:
     """Assemble the ESP section of /api/app.
 
-    Apart from diag/suggestion/boot/events, derives a per-device summary
-    keyed by the topic segment wmbus/<device>/diag/... so the WebGUI can
-    render an "N × ESP" badge in the Pipeline ESP node.
+    Multi-source ESP device detection:
 
-    Liveness rules:
-      - A device is "active" only when it has emitted a summary event in
-        the ACTIVE_WINDOW_S window (5 min — twice the ESP's 60 s heartbeat
-        plus margin).
-      - Boot/meter_window/rx_path alone do NOT make a device active —
-        those can linger in the events buffer or arrive as MQTT-retained
-        messages from devices that no longer publish, leading to false
-        "ghost ESP" counts.
-      - devices_count returned to the frontend is the ACTIVE count only.
-      - devices_total reports all device names seen in the buffer so the
-        drill-down can surface stale entries when the user wants to see
-        what's lingering from MQTT retained / past sessions.
+      1. PRIMARY: status_esp_telegram_devices.tsv — per-device last_seen
+         from the RAW telegram topic. Telegrams arrive live (not retained),
+         so this is the most reliable signal of which ESPs are currently
+         alive. Works WITHOUT ESPHome diagnostics enabled.
+
+      2. SECONDARY: ESP events buffer (status_esp_events.tsv) — summary
+         events confirm the device runs the wmbusmeters diag pipeline.
+         Adds richer info (RSSI, drop %, hints) when available.
+
+    A device is "active" if it has emitted a RAW telegram OR a summary
+    event in the last ACTIVE_WINDOW_S window (5 min). Boot/meter_window
+    on their own no longer qualify as active — they typically replay from
+    MQTT retained on bridge restart.
     """
     import time as _time
 
@@ -863,15 +867,35 @@ def _esp_payload() -> dict:
     suggestion = read_json(STATUS_ESP_SUGGESTION_FILE)
     boot       = read_json(STATUS_ESP_BOOT_FILE)
     events     = read_tsv(STATUS_ESP_EVENTS_FILE, ["epoch", "evtype", "topic", "payload"], limit=100, reverse=True)
+    telegram_rows = read_tsv(STATUS_ESP_TELEGRAM_DEVICES_FILE, ["name", "last_telegram_epoch", "topic", "telegram_count"])
 
     ACTIVE_WINDOW_S = 5 * 60
     now_epoch       = int(_time.time())
     SUMMARY_TYPES   = {"summary", "summary_15min", "summary_60min"}
 
-    # Per-device aggregation. For each distinct device segment we track:
-    #   - latest event of ANY type (for last_seen / last_evtype)
-    #   - latest summary epoch (for the active flag — only summaries count)
+    # Per-device aggregation. Seeded from telegram tracker (primary), then
+    # enriched from the diag events buffer (secondary).
     devices: dict[str, dict] = {}
+
+    # ── Seed from telegram tracker ──
+    # This is the most reliable "is alive" signal — telegrams are live,
+    # not retained, so a dead ESP fades out within ACTIVE_WINDOW_S.
+    for row in telegram_rows:
+        dev = (row.get("name") or "").strip()
+        if not dev:
+            continue
+        ep = safe_int(row.get("last_telegram_epoch"))
+        devices[dev] = {
+            "name": dev,
+            "topic": row.get("topic") or "",
+            "last_telegram_epoch": ep,
+            "telegram_count": safe_int(row.get("telegram_count")),
+            "last_seen_epoch": ep,
+            "last_evtype": "telegram",
+            "last_summary_epoch": 0,
+        }
+
+    # ── Enrich / merge from diag events ──
     for ev in events:
         topic = (ev.get("topic") or "").strip()
         parts = topic.split("/")
@@ -880,15 +904,18 @@ def _esp_payload() -> dict:
         dev = parts[1]
         if not dev:
             continue
-        epoch = safe_int(ev.get("epoch"))
+        epoch  = safe_int(ev.get("epoch"))
         evtype = ev.get("evtype") or ""
         entry = devices.setdefault(dev, {
             "name": dev,
             "topic": topic,
+            "last_telegram_epoch": 0,
+            "telegram_count": 0,
             "last_seen_epoch": 0,
             "last_evtype": "",
             "last_summary_epoch": 0,
         })
+        # last_seen across both sources, with evtype carrying which side won.
         if epoch > entry["last_seen_epoch"]:
             entry["last_seen_epoch"] = epoch
             entry["last_evtype"] = evtype
@@ -896,13 +923,22 @@ def _esp_payload() -> dict:
         if evtype in SUMMARY_TYPES and epoch > entry["last_summary_epoch"]:
             entry["last_summary_epoch"] = epoch
 
-    # Set the active flag and split into active / inactive lists.
+    # ── Set active flag ──
+    # Active if EITHER telegram OR summary is recent. Boot-only or
+    # retained-only entries fall through to "stale".
     for entry in devices.values():
+        last_tg  = entry.get("last_telegram_epoch", 0)
         last_sum = entry.get("last_summary_epoch", 0)
-        entry["active"] = bool(last_sum > 0 and (now_epoch - last_sum) <= ACTIVE_WINDOW_S)
+        fresh_tg  = last_tg  > 0 and (now_epoch - last_tg)  <= ACTIVE_WINDOW_S
+        fresh_sum = last_sum > 0 and (now_epoch - last_sum) <= ACTIVE_WINDOW_S
+        entry["active"] = bool(fresh_tg or fresh_sum)
+        # has_diag tells the frontend whether this ESP exposes diag/events
+        # (useful for the "diag required" notice — we can soften it when
+        # at least one ESP IS publishing diag).
+        entry["has_diag"] = last_sum > 0
 
-    # Sort: active first (by recency), then inactive (by recency). Stale
-    # "ghost ESP" entries from MQTT retained messages drift to the bottom.
+    # Sort: active first (by recency), then inactive. Stale ghost entries
+    # from MQTT retained messages drift to the bottom.
     devices_list = sorted(
         devices.values(),
         key=lambda d: (not d["active"], -d["last_seen_epoch"]),
@@ -915,10 +951,13 @@ def _esp_payload() -> dict:
         "boot": boot,
         "events": events,
         "devices": devices_list,
-        # devices_count = ACTIVE only (used by Pipeline badge "N × ESP").
-        # devices_total = all distinct names seen (for drill-down stats).
+        # devices_count = ACTIVE only (drives the Pipeline badge "N × ESP").
+        # devices_total = all distinct names seen.
         "devices_count": devices_active_count,
         "devices_total": len(devices_list),
+        # any_diag_active tells the UI whether to show or soften the
+        # "ESP diagnostics required" notice on the ESP Logs page.
+        "any_diag_active": any(d["active"] and d["has_diag"] for d in devices_list),
     }
 
 

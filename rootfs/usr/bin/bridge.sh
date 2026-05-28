@@ -49,6 +49,14 @@ STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
 # the parallel LISTEN instance has a meter-preview-<id> file in its config dir.
 # Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
 STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
+# Per-ESP-device telegram tracking — written by the background MQTT subscriber
+# that listens to the RAW topic itself. The "+" wildcard segment carries the
+# device name (e.g. wmbus/xiaoseed/telegram → "xiaoseed"). Lets the WebGUI
+# detect active ESPs WITHOUT requiring diagnostic publishing on the ESP side.
+# Telegrams arrive live (not retained), so a dead ESP's name naturally ages
+# out of the active window — solves the "ghost ESP" problem.
+# Format: device_name<TAB>last_seen_epoch<TAB>last_topic<TAB>telegram_count
+STATUS_ESP_TELEGRAM_DEVICES_FILE="${BASE}/status_esp_telegram_devices.tsv"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
 
@@ -74,7 +82,7 @@ RAW_RATE_CUR_MIN_EPOCH=0
 RAW_RATE_CUR_MIN_COUNT=0
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
 # Preview values are session-scoped — clear stale entries from previous runs
 # so the WebGUI doesn't show outdated readings (or the legacy first-numeric-field
 # pick that briefly stored bogus backflow_m3 / fraud counter values) until the
@@ -591,6 +599,63 @@ STATUS_ESP_DIAG_FILE="${BASE}/status_esp_diag.json"
         done
     sleep 5
   done
+) &
+
+# Background subscriber for per-ESP-device telegram tracking.
+# Listens to the RAW telegram topic (with wildcard) and records each
+# distinct device name + last-seen epoch + telegram count to a TSV.
+# This is the SOURCE OF TRUTH for "which ESPs are alive right now" —
+# telegrams arrive live, not retained, so dead ESPs naturally age out.
+# Works even when the ESP has NO diagnostic publishing enabled.
+#
+# The device name is whatever segment of the received topic matches the
+# `+` wildcard in RAW_TOPIC (e.g. RAW_TOPIC="wmbus/+/telegram", topic
+# "wmbus/xiaoseed/telegram" → device "xiaoseed"). If RAW_TOPIC has no
+# wildcard at all, this loop still runs but produces no device data
+# (and the WebGUI falls back to diag-based detection as before).
+(
+  # Pre-compute which segment of RAW_TOPIC holds the device name.
+  IFS='/' read -ra _RT_PARTS <<< "${RAW_TOPIC}"
+  _RT_DEV_POS=-1
+  for _i in "${!_RT_PARTS[@]}"; do
+    if [[ "${_RT_PARTS[$_i]}" == "+" ]]; then
+      _RT_DEV_POS="${_i}"
+      break
+    fi
+  done
+
+  if [[ "${_RT_DEV_POS}" -ge 0 ]]; then
+    log "ESP-device tracker: device name at topic segment ${_RT_DEV_POS} of '${RAW_TOPIC}'"
+    while true; do
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%t' -W 180 2>/dev/null \
+        | while IFS= read -r _tg_topic; do
+            [[ -n "${_tg_topic}" ]] || continue
+            IFS='/' read -ra _T_PARTS <<< "${_tg_topic}"
+            _dev="${_T_PARTS[${_RT_DEV_POS}]:-}"
+            [[ -n "${_dev}" ]] || continue
+            _now=$(date +%s 2>/dev/null || echo 0)
+            _tmp="${STATUS_ESP_TELEGRAM_DEVICES_FILE}.tmp"
+            # Upsert the row for this device — increment count if exists,
+            # otherwise append a fresh row with count=1.
+            awk -F'\t' -v dev="${_dev}" -v now="${_now}" -v tg="${_tg_topic}" '
+              BEGIN { upd=0 }
+              $1 == dev {
+                cnt = (NF >= 4 ? $4+1 : 1)
+                print dev "\t" now "\t" tg "\t" cnt
+                upd=1
+                next
+              }
+              { print }
+              END { if (!upd) print dev "\t" now "\t" tg "\t1" }
+            ' "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null > "${_tmp}" \
+              && mv "${_tmp}" "${STATUS_ESP_TELEGRAM_DEVICES_FILE}" 2>/dev/null \
+              || true
+          done
+      sleep 5
+    done
+  else
+    log "ESP-device tracker: RAW_TOPIC '${RAW_TOPIC}' has no '+' wildcard — per-device tracking disabled."
+  fi
 ) &
 
 # Background subscriber for all ESP diagnostic events.

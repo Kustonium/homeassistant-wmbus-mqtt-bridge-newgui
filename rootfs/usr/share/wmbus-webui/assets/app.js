@@ -891,8 +891,9 @@
                 <th>${escapeHtml(t("workspace_esp_device_status", "Status"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_name", "Device"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_topic", "Topic"))}</th>
+                <th style="text-align:right;">${escapeHtml(t("workspace_esp_device_telegrams", "Telegrams"))}</th>
+                <th style="text-align:center;">${escapeHtml(t("workspace_esp_device_diag", "Diag"))}</th>
                 <th>${escapeHtml(t("workspace_esp_device_last_event", "Last event"))}</th>
-                <th>${escapeHtml(t("workspace_esp_device_evtype", "Type"))}</th>
               </tr>
             </thead>
             <tbody>
@@ -904,13 +905,19 @@
                 const statusCell = isAct
                   ? `<span class="dot ok live" style="margin-right:5px;"></span>${escapeHtml(t("pipeline_esp_active", "active"))}`
                   : `<span class="dot" style="margin-right:5px;"></span>${escapeHtml(t("workspace_esp_device_stale", "stale (retained?)"))}`;
+                const tgCount = Number(d.telegram_count || 0);
+                const tgCell  = tgCount > 0 ? String(tgCount) : "—";
+                const diagCell = d.has_diag
+                  ? `<span class="pill ok" style="font-size:10px;">✓</span>`
+                  : `<span class="pill muted" style="font-size:10px;">—</span>`;
                 return `
                   <tr style="${rowStyle}">
                     <td style="white-space:nowrap;font-size:11px;">${statusCell}</td>
                     <td><strong>${escapeHtml(d.name || "—")}</strong></td>
                     <td class="mono" style="font-size:11px;color:#9eafba;">${escapeHtml(d.topic || "—")}</td>
-                    <td style="white-space:nowrap;">${escapeHtml(when)}</td>
-                    <td>${escapeHtml(d.last_evtype || "—")}</td>
+                    <td style="text-align:right;font-family:monospace;font-size:12px;">${escapeHtml(tgCell)}</td>
+                    <td style="text-align:center;">${diagCell}</td>
+                    <td style="white-space:nowrap;font-size:11px;">${escapeHtml(when)}</td>
                   </tr>`;
               }).join("")}
             </tbody>
@@ -1809,11 +1816,13 @@
       .map(dev => `<span class="pill ok" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(dev)}</span>`)
       .join("");
 
-    // Help notice — most users don't realise that ESPHome must have the
-    // diag pipeline enabled for these events to flow. Also call out the
-    // MQTT-retained gotcha: a long-dead ESP can keep its name showing in
-    // the events buffer because the broker replayed its last boot message.
-    const helpNotice = `
+    // Help notice — shown only when NO active ESP has diag enabled. When
+    // at least one ESP is publishing diag events the notice becomes
+    // counter-productive (it says "diagnostics required" while events
+    // are clearly arriving). The flag is computed in webui.py's
+    // _esp_payload() based on per-device has_diag + active state.
+    const anyDiagActive = !!(esp.any_diag_active);
+    const helpNotice = anyDiagActive ? "" : `
       <div class="notice" style="font-size:11px;color:#9eafba;padding:10px 14px;background:#0e1a23;border:1px dashed #2c4555;border-radius:6px;margin-bottom:14px;display:flex;gap:10px;align-items:flex-start;">
         <span style="font-size:16px;flex-shrink:0;">📝</span>
         <div>
