@@ -70,7 +70,12 @@ RAW_RATE_CUR_MIN_EPOCH=0
 RAW_RATE_CUR_MIN_COUNT=0
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_CANDIDATE_VALUES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+# Preview values are session-scoped — clear stale entries from previous runs
+# so the WebGUI doesn't show outdated readings (or the legacy first-numeric-field
+# pick that briefly stored bogus backflow_m3 / fraud counter values) until the
+# next telegram arrives. New correct values appear ~2 min later on first decode.
+: > "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || touch "${STATUS_CANDIDATE_VALUES_FILE}"
 [[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
 
 iso_now() {
@@ -1515,26 +1520,43 @@ emit_snippet_if_new() {
 # status_candidate_values.tsv. Called only for telegrams from candidates that
 # have a meter-preview-<id> file in /data/listen/etc/wmbusmeters.d/ (webui.py
 # writes those when the user clicks "Preview value" on the Discover page).
-# Picks the FIRST numeric-valued field that isn't metadata (id, rssi, timestamp…),
-# which for water/heat meters is typically total_m3 and for electricity is
-# something like current_power_consumption_kw — exactly what the user wants
-# to see to identify "their" meter.
+#
+# Picks the SAME primary field as status_meter_seen() — keeps preview values
+# consistent with what the user sees on the Meters page after permanently adding
+# the meter. Two-step heuristic:
+#   1. instantaneous reading (_kw, _w, _m3h, _l_h)         — e.g. current_power_consumption_kw
+#   2. cumulative reading (total*, _m3, kwh, wh, energy, volume)
+#      but explicitly skip fault/diagnostic counters
+#      (backflow_m3, fraud_*, leak_*, tamper_*, alarm_*)   — e.g. total_m3
+#   3. last resort: first numeric field
 _store_candidate_value() {
   local json_line="$1"
   local id value_key value now tmp
   id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)"
   [[ -n "${id}" ]] || return 0
-  # Pick the first sensible numeric field. Skip wmbusmeters metadata.
-  IFS=$'\t' read -r value_key value < <(
-    jq -r '
-      to_entries[]
-      | select(.key as $k
-          | (["_","id","name","meter","media","timestamp","device_date_time","rssi","lqi","status","driver","type"]
-              | index($k)) | not)
-      | select((.value|type)=="number")
-      | "\(.key)\t\(.value)"
-    ' <<<"${json_line}" 2>/dev/null | head -n 1
-  )
+  # Step 1 — instantaneous fields.
+  value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(_kw$|_w$|_m3h$|_l_h$)";"i")) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  # Step 2 — cumulative reading, excluding fault counters that wmbusmeters
+  # sometimes emits with bogusly large values (the bug that put 1291845 m³
+  # of "backflow" in the WebGUI before).
+  if [[ -z "${value_key}" ]]; then
+    value_key="$(jq -r 'to_entries[] | select((.value|type)=="number") | select(.key|test("(^total|_m3$|kwh|wh$|energy|volume)";"i")) | select(.key|test("(backflow|fraud|leak|tamper|alarm)";"i")|not) | .key' <<<"${json_line}" 2>/dev/null | head -n 1 || true)"
+  fi
+  if [[ -n "${value_key}" ]]; then
+    value="$(jq -r --arg k "${value_key}" '.[$k] // empty' <<<"${json_line}" 2>/dev/null || true)"
+  else
+    # Step 3 — any numeric (skip wmbusmeters metadata keys though).
+    IFS=$'\t' read -r value_key value < <(
+      jq -r '
+        to_entries[]
+        | select(.key as $k
+            | (["_","id","name","meter","media","timestamp","device_date_time","rssi","lqi","status","driver","type"]
+                | index($k)) | not)
+        | select((.value|type)=="number")
+        | "\(.key)\t\(.value)"
+      ' <<<"${json_line}" 2>/dev/null | head -n 1
+    )
+  fi
   [[ -n "${value}" ]] || return 0
   now="$(iso_now)"
   tmp="${STATUS_CANDIDATE_VALUES_FILE}.tmp"
