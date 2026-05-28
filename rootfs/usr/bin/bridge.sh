@@ -1155,84 +1155,106 @@ process_search_json() {
 }
 
 # ------------------------------------------------------------
-# Meter registration
+# Meter registration — refresh_meter_files()
+# Called once at startup AND before every run_once() iteration, so that
+# meters added/removed by the user via options.json are picked up by a
+# soft pipeline restart (touch ${RELOAD_FLAG}) without needing a full
+# container restart. wmbusmeters reads its meter-NNNN files only at
+# startup, so the pipeline must be restarted to pick up changes.
 # ------------------------------------------------------------
-rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
+refresh_meter_files() {
+  rm -f "${METER_DIR}/meter-"* 2>/dev/null || true
 
-METERS_COUNT=0
-if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
-  METERS_COUNT="$(jq -r '.meters|length' "${OPTIONS_JSON}")"
-fi
-OFFICIAL_METERS_COUNT="${METERS_COUNT}"
-
-if [[ "${METERS_COUNT}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
-  cached_count="$(create_search_meter_files_from_cache)"
-  if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
-    METERS_COUNT="${cached_count}"
-    SEARCH_USING_TEMP_METERS="true"
-    SEARCH_TEMP_METERS_LOADED="${cached_count}"
-    warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
-    warn "SEARCH MODE uses cached candidates from ${SEARCH_CANDIDATES_FILE}. Remove that file or disable search_mode to return to pure LISTEN MODE."
-    write_search_status "search" "loaded_temp_meters"
-  else
-    warn "No meters configured -> SEARCH DISCOVERY MODE."
-    warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
-    warn "The bridge will collect id+driver candidates first. Let it run long enough to hear meters; restart later to decode cached candidates and compare m3 values."
-    write_search_status "collecting" "no_cached_candidates"
+  METERS_COUNT=0
+  if [[ -f "${OPTIONS_JSON}" ]] && jq -e '.meters and (.meters|length>0)' "${OPTIONS_JSON}" >/dev/null 2>&1; then
+    METERS_COUNT="$(jq -r '.meters|length' "${OPTIONS_JSON}")"
   fi
-elif [[ "${METERS_COUNT}" -eq 0 ]]; then
-  warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
-  write_search_status "listen" "listen_mode"
-else
-  i=0
-  while IFS= read -r meter_json; do
-    i=$((i+1))
-    file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
+  OFFICIAL_METERS_COUNT="${METERS_COUNT}"
+  SEARCH_USING_TEMP_METERS="false"
 
-    friendly_name="$(echo "${meter_json}" | jq -r '.id // "meter"')"
-    driver="$(echo "${meter_json}" | jq -r '.type // "auto"')"
-    driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
-    mid_raw="$(echo "${meter_json}" | jq -r '.meter_id // empty')"
-    key="$(echo "${meter_json}" | jq -r '.key // empty')"
-
-    if [[ -z "${key}" || "${key}" == "null" ]]; then
-      key=""
-    elif [[ ! "${key}" =~ ^[A-Fa-f0-9]{32}$ ]]; then
-      warn "Invalid key for '${friendly_name}' -> skipping (expected empty or 32 hex chars, got: '${key}')"
-      continue
+  if [[ "${METERS_COUNT}" -eq 0 && "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+    local cached_count
+    cached_count="$(create_search_meter_files_from_cache)"
+    if [[ "${cached_count}" =~ ^[0-9]+$ && "${cached_count}" -gt 0 ]]; then
+      METERS_COUNT="${cached_count}"
+      SEARCH_USING_TEMP_METERS="true"
+      SEARCH_TEMP_METERS_LOADED="${cached_count}"
+      warn "No user meters configured -> SEARCH MODE (temporary cached candidates=${cached_count}, expected=${SEARCH_EXPECTED_VALUE_M3} m3, tolerance=${SEARCH_TOLERANCE_M3} m3)."
+      warn "SEARCH MODE uses cached candidates from ${SEARCH_CANDIDATES_FILE}. Remove that file or disable search_mode to return to pure LISTEN MODE."
+      write_search_status "search" "loaded_temp_meters"
+    else
+      warn "No meters configured -> SEARCH DISCOVERY MODE."
+      warn "SEARCH MODE needs decoded JSON values, but there are no cached candidates yet."
+      warn "The bridge will collect id+driver candidates first. Let it run long enough to hear meters; restart later to decode cached candidates and compare m3 values."
+      write_search_status "collecting" "no_cached_candidates"
     fi
+  elif [[ "${METERS_COUNT}" -eq 0 ]]; then
+    warn "No meters configured -> LISTEN MODE (will log DLL-ID + suggested driver)."
+    write_search_status "listen" "listen_mode"
+  else
+    local i=0
+    local meter_json file friendly_name driver driver_other mid_raw key mid
+    while IFS= read -r meter_json; do
+      i=$((i+1))
+      file="$(printf '%s/meter-%04d' "${METER_DIR}" "${i}")"
 
-    [[ -z "${driver}" || "${driver}" == "null" ]] && driver="auto"
+      friendly_name="$(echo "${meter_json}" | jq -r '.id // "meter"')"
+      driver="$(echo "${meter_json}" | jq -r '.type // "auto"')"
+      driver_other="$(echo "${meter_json}" | jq -r '.type_other // empty')"
+      mid_raw="$(echo "${meter_json}" | jq -r '.meter_id // empty')"
+      key="$(echo "${meter_json}" | jq -r '.key // empty')"
 
-    if [[ "${driver}" == "other" ]]; then
-      if [[ -z "${driver_other}" || "${driver_other}" == "null" ]]; then
-        warn "type=other but type_other is empty for '${friendly_name}' -> skipping"
+      if [[ -z "${key}" || "${key}" == "null" ]]; then
+        key=""
+      elif [[ ! "${key}" =~ ^[A-Fa-f0-9]{32}$ ]]; then
+        warn "Invalid key for '${friendly_name}' -> skipping (expected empty or 32 hex chars, got: '${key}')"
         continue
       fi
-      driver="${driver_other}"
-    fi
 
-    mid="$(normalize_meter_id "${mid_raw}")"
-    if [[ -z "${mid}" ]]; then
-      warn "Invalid meter_id for '${friendly_name}' -> skipping (got: '${mid_raw}')"
-      continue
-    fi
+      [[ -z "${driver}" || "${driver}" == "null" ]] && driver="auto"
 
-    {
-      echo "name=${friendly_name}"
-      echo "id=${mid}"
-      if [[ -n "${key}" ]]; then
-        echo "key=${key}"
+      if [[ "${driver}" == "other" ]]; then
+        if [[ -z "${driver_other}" || "${driver_other}" == "null" ]]; then
+          warn "type=other but type_other is empty for '${friendly_name}' -> skipping"
+          continue
+        fi
+        driver="${driver_other}"
       fi
-      if [[ "${driver}" != "auto" ]]; then
-        echo "driver=${driver}"
-      fi
-    } > "${file}"
 
-    log "meter: ${friendly_name} id=${mid} driver=${driver}"
-  done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
-  write_search_status "configured" "official_meters_configured"
-fi
+      mid="$(normalize_meter_id "${mid_raw}")"
+      if [[ -z "${mid}" ]]; then
+        warn "Invalid meter_id for '${friendly_name}' -> skipping (got: '${mid_raw}')"
+        continue
+      fi
+
+      {
+        echo "name=${friendly_name}"
+        echo "id=${mid}"
+        if [[ -n "${key}" ]]; then
+          echo "key=${key}"
+        fi
+        if [[ "${driver}" != "auto" ]]; then
+          echo "driver=${driver}"
+        fi
+      } > "${file}"
+
+      log "meter: ${friendly_name} id=${mid} driver=${driver}"
+    done < <(jq -c '.meters[]' "${OPTIONS_JSON}" 2>/dev/null || true)
+    write_search_status "configured" "official_meters_configured"
+  fi
+}
+
+# Soft-reload flag: touch this file to make the running pipeline exit
+# cleanly. The restart_on_exit loop refreshes meter files and respawns.
+# Used by webui.py /api/reload-pipeline to pick up new meters without
+# a full container restart.
+RELOAD_FLAG="${BASE}/.reload_pipeline"
+rm -f "${RELOAD_FLAG}" 2>/dev/null || true
+
+# Initial meter registration before the restart loop kicks in. Without
+# this, METERS_COUNT and OFFICIAL_METERS_COUNT would stay at their
+# default (0), and the first iteration would unconditionally go LISTEN.
+refresh_meter_files
 
 # ------------------------------------------------------------
 # Discovery
@@ -1523,38 +1545,29 @@ run_once() {
   last_driver=""
   last_type=""
 
-  # ─── Parallel LISTEN-only wmbusmeters (candidate visibility in DECODE mode) ───
-  # When user has configured meters, the primary wmbusmeters runs in DECODE
-  # mode and stops emitting "Received telegram from:" lines for unconfigured
-  # devices — the WebGUI candidate list freezes. To keep candidates fresh,
-  # spawn a SECOND wmbusmeters instance subscribed to the same RAW_TOPIC,
-  # using ${LISTEN_BASE} as its config dir (no meter files there). The
-  # secondary instance only emits candidate IDs; it does not publish state
-  # or discovery. Decode flow stays exactly the same.
-  #
-  # Skipped when METERS_COUNT == 0 — the primary instance is already in
-  # listen mode (current single-instance behavior, no overhead added).
-  local LISTEN_PID=""
-  if [[ "${METERS_COUNT}" -gt 0 ]]; then
-    (
-      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
-        | awk '
-            function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
-            {
-              gsub(/[[:space:]]/, "", $0);
-              sub(/^0x/i, "", $0);
-              if (!ishex($0)) next;
-              if ((length($0) % 2) != 0) next;
-              print $0;
-              fflush();
-            }
-          ' \
-        | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
-        | parse_listen_candidates
-    ) &
-    LISTEN_PID=$!
-    log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — keeps candidate list alive while ${METERS_COUNT} meter(s) decode."
-  fi
+  # ─── Soft-reload flag watcher ────────────────────────────────────────
+  # Polls for ${RELOAD_FLAG} every 2 s. When present, removes it and kills
+  # the main shell's direct children (mosquitto_sub, awk, tee, wmbusmeters,
+  # while-read subshell) to bring down the foreground pipeline. The
+  # restart_on_exit loop above refreshes meter files and respawns run_once.
+  # Watcher excludes itself (BASHPID) and LISTEN_PID from the kill list so
+  # the parallel listen instance keeps running across pipeline restarts.
+  (
+    watcher_self="${BASHPID}"
+    while sleep 2; do
+      if [[ -f "${RELOAD_FLAG}" ]]; then
+        rm -f "${RELOAD_FLAG}" 2>/dev/null || true
+        log "Soft reload: ${RELOAD_FLAG} detected, restarting decode pipeline..."
+        for child in $(pgrep -P "$$" 2>/dev/null); do
+          [[ "${child}" == "${watcher_self}" ]] && continue
+          [[ -n "${LISTEN_PID}" && "${child}" == "${LISTEN_PID}" ]] && continue
+          kill -TERM "${child}" 2>/dev/null
+        done
+        exit 0
+      fi
+    done
+  ) &
+  local WATCHER_PID=$!
 
   if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
@@ -1671,26 +1684,60 @@ else
 done
 fi
 
-  # ─── Cleanup parallel LISTEN instance ──────────────────────────────────
-  # Main pipeline has exited (pipe closed / wmbusmeters died / SIGTERM).
-  # Kill the secondary listen subshell + its direct children (mosquitto_sub,
-  # awk, wmbusmeters --useconfig=LISTEN_BASE) so the restart loop starts
-  # with a clean slate. Without explicit pkill -P the grandchildren would be
-  # orphaned (re-parented to init) and would keep racing the next iteration
-  # on status_candidates.tsv. The restart_on_exit loop above respawns them.
-  if [[ -n "${LISTEN_PID}" ]]; then
-    log "Stopping parallel LISTEN instance (pid=${LISTEN_PID})..."
-    # 1. TERM the subshell's direct children (mosquitto_sub | awk | wmbusmeters)
-    pkill -TERM -P "${LISTEN_PID}" 2>/dev/null || true
-    # 2. TERM the subshell process itself
-    kill -TERM "${LISTEN_PID}" 2>/dev/null || true
-    # 3. Reap — wait drops the entry from the job table
-    wait "${LISTEN_PID}" 2>/dev/null || true
-    # 4. Belt-and-suspenders for any straggler that ignored SIGTERM
-    pkill -KILL -P "${LISTEN_PID}" 2>/dev/null || true
-    LISTEN_PID=""
+  # ─── Cleanup flag watcher ──────────────────────────────────────────────
+  # Main pipeline exited (natural EOF / soft-reload kill / SIGTERM). Stop
+  # the polling watcher. LISTEN instance is NOT killed here — it persists
+  # across run_once restarts (managed by the restart_on_exit loop instead).
+  if [[ -n "${WATCHER_PID}" ]]; then
+    kill -TERM "${WATCHER_PID}" 2>/dev/null || true
+    wait "${WATCHER_PID}" 2>/dev/null || true
   fi
 }
+
+# ────────────────────────────────────────────────────────────────────────
+# Parallel LISTEN instance lifecycle — managed at the script level so it
+# persists across run_once() restarts (soft reload picks up new meters
+# without disturbing the always-on candidate stream).
+# ────────────────────────────────────────────────────────────────────────
+LISTEN_PID=""
+
+start_listen_instance() {
+  # Already running? Done.
+  if [[ -n "${LISTEN_PID}" ]] && kill -0 "${LISTEN_PID}" 2>/dev/null; then
+    return 0
+  fi
+  (
+    ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+      | awk '
+          function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
+          {
+            gsub(/[[:space:]]/, "", $0);
+            sub(/^0x/i, "", $0);
+            if (!ishex($0)) next;
+            if ((length($0) % 2) != 0) next;
+            print $0;
+            fflush();
+          }
+        ' \
+      | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
+      | parse_listen_candidates
+  ) &
+  LISTEN_PID=$!
+  log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — provides always-on candidate visibility."
+}
+
+stop_listen_instance() {
+  [[ -z "${LISTEN_PID}" ]] && return 0
+  log "Stopping parallel LISTEN instance (pid=${LISTEN_PID})..."
+  pkill -TERM -P "${LISTEN_PID}" 2>/dev/null || true
+  kill -TERM "${LISTEN_PID}" 2>/dev/null || true
+  wait "${LISTEN_PID}" 2>/dev/null || true
+  pkill -KILL -P "${LISTEN_PID}" 2>/dev/null || true
+  LISTEN_PID=""
+}
+
+# Ensure LISTEN dies when the addon shuts down (docker stop / s6 SIGTERM).
+trap stop_listen_instance EXIT TERM INT
 
 # ------------------------------------------------------------
 # wait_for_mqtt
@@ -1736,6 +1783,23 @@ wait_for_mqtt() {
 while true; do
   set +e
   wait_for_mqtt
+
+  # ─── Soft reload: refresh meter files & LISTEN instance ───
+  # Re-read options.json so meters added/removed via WebUI without a
+  # container restart are picked up. wmbusmeters reads its meter-NNNN
+  # configs only at startup, so the pipeline restart on the next line
+  # is required for new meters to start decoding.
+  refresh_meter_files
+
+  # LISTEN instance is needed only when DECODE is active (METERS_COUNT > 0).
+  # When user has no meters, the primary wmbusmeters already runs in listen
+  # mode and a second one would be redundant work.
+  if [[ "${METERS_COUNT}" -gt 0 ]]; then
+    start_listen_instance
+  else
+    stop_listen_instance
+  fi
+
   run_once
   rc=$?
   set -e

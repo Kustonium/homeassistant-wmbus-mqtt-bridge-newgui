@@ -360,6 +360,27 @@
     return result;
   }
 
+  // Soft pipeline reload — backend touches /data/.reload_pipeline; bridge.sh's
+  // watcher detects the flag (~2 s poll) and restarts the decode pipeline so
+  // newly added/removed meters take effect WITHOUT a full container restart.
+  // The webui process and MQTT broker connection stay alive — only the
+  // decode wmbusmeters is recycled.
+  function triggerSoftReload() {
+    state.softReloading = true;
+    render();
+    (async () => {
+      try {
+        await postApi("reload-pipeline", {});
+      } catch (_) {
+        // Endpoint failed — fall back to a normal refresh after a short wait.
+      }
+      // Give bridge.sh ~5 s: 2 s flag poll + 2-3 s decode pipeline respawn.
+      await new Promise(r => setTimeout(r, 5000));
+      state.softReloading = false;
+      await fetchData(currentLang());
+    })();
+  }
+
   function startLiveUpdates(lang = "") {
     if (!window.EventSource) {
       state.liveConnected = false;
@@ -490,6 +511,11 @@
         </main>
       </div>
       ${state.modal ? renderModal() : ""}
+      ${state.softReloading ? `
+        <div style="position:fixed;right:18px;bottom:18px;background:#1d2a18;color:#a3d870;border:1px solid #4a7332;padding:10px 16px;border-radius:8px;z-index:35;display:flex;align-items:center;gap:10px;font-size:13px;">
+          <span style="font-size:18px;">⏳</span>
+          <span>${escapeHtml(t("reloading_pipeline", "Loading new meter…"))}</span>
+        </div>` : ""}
       ${state.toast ? `<div class="toast ${state.toast.isError ? "error" : ""}">${escapeHtml(state.toast.message)}</div>` : ""}
     `;
   }
@@ -1599,7 +1625,11 @@
         const result = await postApi("add-meter", Object.fromEntries(form.entries()));
         state.modal = null;
         toast(result.message || t("webui_meter_added", "Meter added."));
-        await fetchData(currentLang());
+        // Soft pipeline reload so the new meter starts decoding without
+        // a full container restart. bridge.sh's watcher picks up the
+        // flag within 2 s, restarts the decode pipeline (~2-3 s), and
+        // the new meter is live without touching the container.
+        triggerSoftReload();
       } catch (error) {
         toast(error.message, true);
       }

@@ -2582,7 +2582,8 @@ class Handler(BaseHTTPRequestHandler):
             path = (ingress_match.group("rest") or "/").rstrip("/") or "/"
         api_suffixes = (
             '/api/app', '/api/events', '/api/status', '/api/add-meter', '/api/remove-meter',
-            '/api/search-control', '/api/restart-bridge', '/api/ignore', '/api/unignore',
+            '/api/search-control', '/api/restart-bridge', '/api/reload-pipeline',
+            '/api/ignore', '/api/unignore',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
             return path
@@ -2632,6 +2633,23 @@ class Handler(BaseHTTPRequestHandler):
             restart_ok, restart_msg = restart_addon_via_supervisor()
             webui_add_event('ok' if restart_ok else 'error', restart_msg)
             self._send_json(200 if restart_ok else 400, {"ok": restart_ok, "message": restart_msg})
+            return
+        if path.endswith('/api/reload-pipeline'):
+            # Soft reload: touch /data/.reload_pipeline. bridge.sh's watcher
+            # picks this up within 2 s, kills the decode pipeline, and the
+            # restart_on_exit loop respawns it after refreshing meter files
+            # from options.json. Listen instance stays running.
+            # Works in BOTH Docker standalone and HA Supervisor — no
+            # SUPERVISOR_TOKEN required.
+            try:
+                flag = BASE / '.reload_pipeline'
+                flag.parent.mkdir(parents=True, exist_ok=True)
+                flag.touch()
+                webui_add_event('ok', 'Pipeline soft-reload requested.')
+                self._send_json(200, {"ok": True, "message": "Pipeline reload requested."})
+            except Exception as exc:
+                webui_add_event('error', f'Pipeline reload failed: {exc}')
+                self._send_json(500, {"ok": False, "message": f"Reload failed: {exc}"})
             return
         if path.endswith('/api/ignore'):
             add_ignored((params.get('id') or [''])[0])
