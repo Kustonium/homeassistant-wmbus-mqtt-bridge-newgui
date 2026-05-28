@@ -1650,11 +1650,17 @@
     return text.slice(0, 140) || (payloadStr || "").slice(0, 80);
   }
 
-  function espEventsTable(rows, activeDevice) {
+  function espEventsTable(rows, activeDevices) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_events", "No events yet."))}</div>`;
-    // Detect multi-device scenario — only dim non-active rows when >1 device is present
-    const devices = [...new Set(rows.map(r => (r.topic || "").split("/")[1]).filter(Boolean))];
-    const multiDevice = devices.length > 1;
+    // activeDevices may be a Set (new caller in espLogsPage) or a single
+    // string (older callers, kept for back-compat). Normalise to a Set.
+    const activeSet = activeDevices instanceof Set
+      ? activeDevices
+      : (typeof activeDevices === "string" && activeDevices ? new Set([activeDevices]) : new Set());
+    // All distinct devices in the event log. When >1 we dim "inactive" ones
+    // (i.e. devices that have NOT sent a summary in the active window).
+    const allDevices = new Set(rows.map(r => (r.topic || "").split("/")[1]).filter(Boolean));
+    const multiDevice = allDevices.size > 1;
     return `
       <div class="table-wrap">
         <table class="esp-events-tbl">
@@ -1675,7 +1681,7 @@
               const timeStr    = epoch ? new Date(epoch * 1000).toLocaleString() : "-";
               const topic      = (row.topic || "").split("/").slice(-3).join("/");
               const rowDevice  = (row.topic || "").split("/")[1] || "";
-              const isActive   = activeDevice && rowDevice === activeDevice;
+              const isActive   = rowDevice && activeSet.has(rowDevice);
               const rowOpacity = multiDevice && !isActive ? "opacity:0.45;" : "";
               const activeDot  = isActive ? `<span style="color:#00e5ff;margin-left:3px;font-size:9px;" title="active ESP">●</span>` : "";
               const summary    = espEventSummary(row.payload || "", evtype);
@@ -1742,25 +1748,50 @@
     const suggestion = esp.suggestion || {};
     const events = asArray(esp.events);
 
-    // Identify active ESP device: most recent summary event carries the device's topic.
-    // bridge.sh subscribes to wmbus/+/diag/summary; topic segment [1] is the device name.
-    const latestSummary = events.find(r =>
-      r.evtype === "summary" || r.evtype === "summary_15min" || r.evtype === "summary_60min"
-    );
-    const activeTopic  = latestSummary ? (latestSummary.topic || "") : "";
-    const activeDevice = activeTopic.split("/")[1] || "";
+    // Identify ALL currently-active ESP devices, not just the single most-recent
+    // one. Each device that has sent a summary (or any event) within the last
+    // 5 minutes counts as "active" — multiple ESPs can run in parallel, each
+    // contributing telegrams to the bridge through its own MQTT topic.
+    //
+    // bridge.sh subscribes to wmbus/+/diag/summary etc.; topic segment [1] is
+    // the device name. We aggregate event topics into a Set per device with
+    // the latest event epoch, then mark any device with a fresh summary as
+    // "active" and any device with any event (older) as "seen".
+    const ACTIVE_WINDOW_S = 5 * 60;  // device counts as active for 5 min after last summary
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    const SUMMARY_TYPES = new Set(["summary", "summary_15min", "summary_60min"]);
 
-    const activeDeviceBadge = activeDevice
-      ? `<span class="pill ok" style="font-size:11px;margin-left:10px;">📡 ${escapeHtml(activeDevice)}</span>`
-      : "";
+    // device → most-recent summary epoch (0 if none)
+    const summaryEpochByDevice = new Map();
+    for (const ev of events) {
+      const dev = (ev.topic || "").split("/")[1] || "";
+      if (!dev) continue;
+      if (!SUMMARY_TYPES.has(ev.evtype)) continue;
+      const ep = Number(ev.epoch || 0);
+      const cur = summaryEpochByDevice.get(dev) || 0;
+      if (ep > cur) summaryEpochByDevice.set(dev, ep);
+    }
+    // Active = summary within last 5 min. Devices without any summary fall
+    // through to the "seen" (gray) bucket.
+    const activeDevices = new Set(
+      [...summaryEpochByDevice.entries()]
+        .filter(([, ep]) => ep > 0 && (nowEpoch - ep) <= ACTIVE_WINDOW_S)
+        .map(([dev]) => dev)
+    );
+
+    // Badge — one pill per active device. When the list is empty (no recent
+    // summaries) we don't render any badge.
+    const activeDeviceBadges = [...activeDevices]
+      .map(dev => `<span class="pill ok" style="font-size:11px;margin-left:6px;">📡 ${escapeHtml(dev)}</span>`)
+      .join("");
 
     return `
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("webui_esp_events", "ESP events"))}</h2>
-          <span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadge}</span>
+          <span>${events.length} ${escapeHtml(t("webui_rows", "rows"))}${activeDeviceBadges}</span>
         </div>
-        ${espEventsTable(events, activeDevice)}
+        ${espEventsTable(events, activeDevices)}
       </section>
       <section class="section">
         <div class="section-head"><h2>${escapeHtml(t("webui_suggestion", "Suggestion"))}</h2></div>
