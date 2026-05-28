@@ -241,10 +241,10 @@
   // ── #6 Reception interval formatter ──────────────────────────────────────
   function fmtInterval(seconds) {
     const n = Number(seconds);
-    if (!n || n <= 0) return "—";
-    if (n < 60)   return `${Math.round(n)}s`;
-    if (n < 3600) return `${Math.round(n / 60)}m`;
-    return `${Math.round(n / 3600)}h`;
+    if (!n || n <= 0) return t("not_enough_data", "not enough data");
+    if (n < 90)   return `~${Math.round(n)}s`;
+    if (n < 5400) return `~${Math.round(n / 60)} min`;
+    return `~${(n / 3600).toFixed(1)} h`;
   }
 
   // ── #7 Pending-restart banner ─────────────────────────────────────────────
@@ -729,8 +729,14 @@
             ${rows
               .map((row) => {
                 const id      = row.id || row.meter_id || "";
-                const seen15m = Number(row.seen_15m || 0);
-                const seen60m = Number(row.seen_60m || 0);
+                // Age-adjust seen_15m / seen_60m like old webui does:
+                // if last_seen is older than the window, the counter is stale — zero it.
+                const lastSeenDate = row.last_seen ? new Date(row.last_seen) : null;
+                const ageS = (lastSeenDate && !isNaN(lastSeenDate))
+                  ? (Date.now() - lastSeenDate.getTime()) / 1000
+                  : Infinity;
+                const seen15m = ageS > 15 * 60 ? 0 : Number(row.seen_15m || 0);
+                const seen60m = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 const {label: statusLabel, color: statusColor} = meterStatusLabel(seen15m, seen60m);
                 const unit    = unitFromKey(row.value_key || "");
                 const valueStr = (row.value && row.value !== "-") ? row.value : "—";
@@ -802,6 +808,17 @@
                 const a    = analysis[id] || analysis[id.toUpperCase()] || row.analysis || {};
                 const enc  = String(a.encryption || "").toLowerCase();
                 const note = String(a.note || "");
+                // Age-adjust seen_15m / seen_60m like old webui: stale counter from a
+                // previous session must not be shown for a meter not seen recently.
+                // Skip the adjustment in decode mode — candidates TSV is intentionally
+                // frozen there (bridge.sh doesn't update it), so the values are already
+                // known to be stale and the column header carries a tooltip explaining that.
+                const lastSeenDate = row.last_seen ? new Date(row.last_seen) : null;
+                const ageS = (lastSeenDate && !isNaN(lastSeenDate))
+                  ? (Date.now() - lastSeenDate.getTime()) / 1000
+                  : Infinity;
+                const seen15mAdj = (!decodeMode && ageS > 15 * 60) ? 0 : Number(row.seen_15m || 0);
+                const seen60mAdj = (!decodeMode && ageS > 60 * 60) ? 0 : Number(row.seen_60m || 0);
                 return `
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong></td>
@@ -810,8 +827,8 @@
                     <td>${mediaIconHtml(row.type || "", driver)} ${escapeHtml(mediaLabel)}</td>
                     <td>${encBadge(enc, note)}</td>
                     <td>${fmtTime(row.last_seen)}</td>
-                    <td>${escapeHtml(row.seen_15m || "0")}</td>
-                    <td>${escapeHtml(row.seen_60m || "0")}</td>
+                    <td>${escapeHtml(String(seen15mAdj))}</td>
+                    <td>${escapeHtml(String(seen60mAdj))}</td>
                     <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
                     ${
                       withActions
@@ -1184,20 +1201,36 @@
     `;
   }
 
+  // Port of old webui event_level_for_ui(): convert raw event level+message into
+  // a UI-friendly (cssClass, label, displayMessage). "Detected unconfigured meter"
+  // warnings are re-classified as "candidate" events and the message is rewritten
+  // so users see them as informational candidate hits rather than warnings.
+  function eventLevelForUi(level, message) {
+    const lvl = String(level || "").toLowerCase();
+    const msg = String(message || "");
+    if (lvl === "warn" && msg.indexOf("Detected unconfigured meter") !== -1) {
+      const label   = t("candidate_detected_label", "Candidate detected");
+      const display = msg.replace("Detected unconfigured meter", label);
+      return {cssClass: "candidate", label: label, message: display};
+    }
+    return {cssClass: lvl, label: lvl || "info", message: msg};
+  }
+
   function eventsList(rows) {
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_events", "No events yet."))}</div>`;
     return `
       <div class="event-list">
         ${rows
-          .map(
-            (row) => `
+          .map((row) => {
+            const ui = eventLevelForUi(row.level, row.message);
+            return `
               <div class="event-row">
                 <div>${fmtTime(row.time)}</div>
-                <div class="event-level">${escapeHtml(row.level || "info")}</div>
-                <div>${escapeHtml(row.message || "")}</div>
+                <div class="event-level ${escapeHtml(ui.cssClass)}">${escapeHtml(ui.label)}</div>
+                <div>${escapeHtml(ui.message)}</div>
               </div>
-            `,
-          )
+            `;
+          })
           .join("")}
       </div>
     `;

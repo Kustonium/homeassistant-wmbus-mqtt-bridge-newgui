@@ -823,6 +823,13 @@ tr:last-child td {
   color: var(--accent-strong);
 }
 
+/* Per-level coloring — ported from old webui (.event-row strong.{ok,warn,error,candidate}). */
+.event-level.ok       { color: #2de36f; }
+.event-level.warn     { color: #f3c84b; }
+.event-level.candidate{ color: #f3c84b; }
+.event-level.error    { color: #ff646b; }
+.event-level.info     { color: var(--accent-strong); }
+
 .code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
