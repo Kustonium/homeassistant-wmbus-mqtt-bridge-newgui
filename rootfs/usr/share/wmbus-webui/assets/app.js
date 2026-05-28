@@ -775,11 +775,10 @@
     if (!rows.length) return `<div class="empty">${escapeHtml(t("webui_no_candidates", "No visible candidates."))}</div>`;
     // analysis is keyed by meter ID
     const analysis = (state.data || {}).analysis || {};
-    const decodeMode = Number(((state.data || {}).model || {}).meter_count || 0) > 0;
-    // In decode mode the 15m/60m columns are STALE — bridge.sh only updates candidates when meter_count==0
-    const rawTip = decodeMode
-      ? ` title="${escapeHtml(t("raw_signal_col_tip", "Stale data from previous listen session — not updated in decode mode"))}" style="cursor:help;border-bottom:1px dashed #607a88;"`
-      : "";
+    // Parallel LISTEN instance keeps candidate stats LIVE in decode mode too —
+    // bridge.sh now runs a secondary wmbusmeters that always feeds candidate
+    // TSV updates regardless of how many meters the user has configured.
+    // No more "stale" warning needed.
     return `
       <div class="table-wrap">
         <table>
@@ -791,8 +790,8 @@
               <th>${escapeHtml(t("media", "Medium"))}</th>
               <th>${escapeHtml(t("encryption_label", "Encryption"))}</th>
               <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
-              <th><span${rawTip}>15m${decodeMode ? " 📡" : ""}</span></th>
-              <th><span${rawTip}>60m${decodeMode ? " 📡" : ""}</span></th>
+              <th>15m</th>
+              <th>60m</th>
               <th>${escapeHtml(t("reception", "Interval"))}</th>
               ${withActions ? "<th></th>" : ""}
             </tr>
@@ -810,15 +809,14 @@
                 const note = String(a.note || "");
                 // Age-adjust seen_15m / seen_60m like old webui: stale counter from a
                 // previous session must not be shown for a meter not seen recently.
-                // Skip the adjustment in decode mode — candidates TSV is intentionally
-                // frozen there (bridge.sh doesn't update it), so the values are already
-                // known to be stale and the column header carries a tooltip explaining that.
+                // Now safe to always apply — parallel LISTEN instance keeps the
+                // candidates TSV fresh in both LISTEN and DECODE modes.
                 const lastSeenDate = row.last_seen ? new Date(row.last_seen) : null;
                 const ageS = (lastSeenDate && !isNaN(lastSeenDate))
                   ? (Date.now() - lastSeenDate.getTime()) / 1000
                   : Infinity;
-                const seen15mAdj = (!decodeMode && ageS > 15 * 60) ? 0 : Number(row.seen_15m || 0);
-                const seen60mAdj = (!decodeMode && ageS > 60 * 60) ? 0 : Number(row.seen_60m || 0);
+                const seen15mAdj = ageS > 15 * 60 ? 0 : Number(row.seen_15m || 0);
+                const seen60mAdj = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 return `
                   <tr>
                     <td><strong>${escapeHtml(id)}</strong></td>
@@ -925,29 +923,81 @@
     `;
   }
 
-  function discoverPage() {
-    const data = state.data || {};
-    const model = data.model || {};
-    const all = asArray(data.candidates);
-    const filtered = applyMediaFilter(all, "type");
-    const decodeMode = Number(model.meter_count || 0) > 0;
-    const rawSignalNote = decodeMode ? `
-      <div class="notice" style="margin-bottom:12px;display:flex;gap:10px;align-items:flex-start;">
-        <span style="font-size:16px;flex-shrink:0;">🕐</span>
-        <div>
-          <strong>${escapeHtml(t("decode_mode_label", "Decode mode — candidate data is from previous listen session"))}</strong>
-          <div style="font-size:11px;color:#9eafba;margin-top:2px;">${escapeHtml(t("raw_signal_note", "wmbusmeters is processing configured meters only and no longer updates candidate statistics. The values below (15m / 60m / Interval) are from the previous LISTEN session and are NOT being updated in real time."))}</div>
-        </div>
-      </div>` : "";
+  // Configured-meters panel on the Discover page — separate from the candidates
+  // table. Shows the user's own meters with reception stats (15m/60m/interval)
+  // sourced from status_meters.tsv (the DECODE-instance counters, kept live
+  // by the primary wmbusmeters). Each row carries a "Remove from config" button
+  // for quick removal without leaving the Discover view.
+  function discoverConfiguredPanel(rows) {
+    if (!rows.length) return "";
     return `
       <section class="section">
         <div class="section-head">
-          <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
-          <span>${filtered.length}${filtered.length !== all.length ? `/${all.length}` : ""} ${escapeHtml(t("webui_visible", "visible"))}</span>
+          <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
+          <span>${rows.length}</span>
         </div>
-        ${rawSignalNote}
+        <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json. The parallel listen instance keeps their reception stats live."))}</p>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>${escapeHtml(t("webui_id", "ID"))}</th>
+                <th>${escapeHtml(t("webui_name", "Name"))}</th>
+                <th>${escapeHtml(t("driver", "Driver"))}</th>
+                <th>${escapeHtml(t("media", "Medium"))}</th>
+                <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
+                <th>15m</th>
+                <th>60m</th>
+                <th>${escapeHtml(t("reception", "Interval"))}</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map(row => {
+                const id           = row.id || "";
+                const lastSeenDate = row.last_seen ? new Date(row.last_seen) : null;
+                const ageS         = (lastSeenDate && !isNaN(lastSeenDate))
+                  ? (Date.now() - lastSeenDate.getTime()) / 1000
+                  : Infinity;
+                const seen15mAdj = ageS > 15 * 60 ? 0 : Number(row.seen_15m || 0);
+                const seen60mAdj = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
+                const {icon: mIcon, mc} = mediaIcon(row.media || "", row.driver || "");
+                const mediaLabel = t(`media_${mc}`, mc);
+                return `
+                  <tr>
+                    <td><strong>${escapeHtml(id)}</strong></td>
+                    <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
+                    <td>${escapeHtml(row.driver || "-")}</td>
+                    <td>${escapeHtml(mediaLabel)}</td>
+                    <td>${fmtTime(row.last_seen)}</td>
+                    <td>${escapeHtml(String(seen15mAdj))}</td>
+                    <td>${escapeHtml(String(seen60mAdj))}</td>
+                    <td style="color:#607a88;font-size:12px;">${escapeHtml(fmtInterval(row.avg_interval_s))}</td>
+                    <td><button class="btn danger" data-action="remove-meter" data-id="${escapeHtml(id)}">${escapeHtml(t("remove_from_config", "Remove from config"))}</button></td>
+                  </tr>`;
+              }).join("")}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+
+  function discoverPage() {
+    const data = state.data || {};
+    const allCandidates = asArray(data.candidates);
+    const filteredCandidates = applyMediaFilter(allCandidates, "type");
+    const allMeters = asArray(data.meters);
+    const filteredMeters = applyMediaFilter(allMeters, "media");
+    return `
+      ${discoverConfiguredPanel(filteredMeters)}
+      <section class="section">
+        <div class="section-head">
+          <h2>${escapeHtml(t("detected_candidates", "Detected candidates"))}</h2>
+          <span>${filteredCandidates.length}${filteredCandidates.length !== allCandidates.length ? `/${allCandidates.length}` : ""} ${escapeHtml(t("webui_visible", "visible"))}</span>
+        </div>
         ${filterChips()}
-        ${candidateTable(filtered, true)}
+        ${candidateTable(filteredCandidates, true)}
       </section>
       <section class="section">
         <div class="section-head">
