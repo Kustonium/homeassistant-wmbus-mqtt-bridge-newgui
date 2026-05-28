@@ -65,12 +65,16 @@ STATUS_LAST_EVENT="starting"
 # Per-minute rate tracking: updated on every incoming RAW telegram.
 # WebGUI reads status_rate_1m.json to show live current/prev minute counts.
 STATUS_RATE_1M_FILE="${BASE}/status_rate_1m.json"
+# Per-minute history (rolling 15 entries) — feeds the sparkline in the WebGUI
+# Statystyki view. Each row: epoch_minute<TAB>telegram_count. Appended every
+# time a minute boundary is crossed; trimmed back to 15 rows.
+STATUS_RATE_HISTORY_FILE="${BASE}/status_rate_history.tsv"
 STATUS_BRIDGE_START_FILE="${BASE}/status_bridge_start.txt"
 RAW_RATE_CUR_MIN_EPOCH=0
 RAW_RATE_CUR_MIN_COUNT=0
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_RATE_HISTORY_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
 # Preview values are session-scoped — clear stale entries from previous runs
 # so the WebGUI doesn't show outdated readings (or the legacy first-numeric-field
 # pick that briefly stored bogus backflow_m3 / fraud counter values) until the
@@ -338,6 +342,18 @@ status_raw_seen() {
   _now_epoch="$(epoch_now)"
   _cur_min=$(( _now_epoch / 60 ))
   if [[ "${RAW_RATE_CUR_MIN_EPOCH}" -ne "${_cur_min}" ]]; then
+    # Minute boundary crossed: archive the finished minute's count into the
+    # 15-entry rolling history (skip when there was no previous minute yet —
+    # RAW_RATE_CUR_MIN_EPOCH==0 means this is the very first telegram). The
+    # _prev_min epoch lets the WebGUI place each bar correctly on the axis.
+    if [[ "${RAW_RATE_CUR_MIN_EPOCH}" -ne 0 ]]; then
+      local _hist_tmp="${STATUS_RATE_HISTORY_FILE}.tmp"
+      {
+        tail -n 14 "${STATUS_RATE_HISTORY_FILE}" 2>/dev/null || true
+        printf '%d\t%d\n' "${RAW_RATE_CUR_MIN_EPOCH}" "${RAW_RATE_CUR_MIN_COUNT}"
+      } > "${_hist_tmp}" 2>/dev/null \
+        && mv "${_hist_tmp}" "${STATUS_RATE_HISTORY_FILE}" 2>/dev/null || true
+    fi
     RAW_RATE_PREV_MIN_COUNT="${RAW_RATE_CUR_MIN_COUNT}"
     RAW_RATE_CUR_MIN_COUNT=1
     RAW_RATE_CUR_MIN_EPOCH="${_cur_min}"

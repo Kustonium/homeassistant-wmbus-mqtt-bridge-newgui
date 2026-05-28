@@ -51,6 +51,20 @@
     webui_cancel: "cancel_label",
   };
 
+  // Dashboard view selector — persisted in localStorage so the user keeps
+  // their preferred lens across reloads. "pipeline" = data-flow diagram with
+  // clickable nodes; "stats" = speed-dial + sparkline + funnel.
+  const LS_VIEW_KEY = "wmbus.dashboardView";
+  function loadDashboardView() {
+    try {
+      const v = window.localStorage.getItem(LS_VIEW_KEY);
+      return (v === "stats" || v === "pipeline") ? v : "pipeline";
+    } catch (_) { return "pipeline"; }
+  }
+  function saveDashboardView(v) {
+    try { window.localStorage.setItem(LS_VIEW_KEY, v); } catch (_) {}
+  }
+
   const state = {
     route: currentRoute(),
     data: null,
@@ -60,6 +74,10 @@
     toast: null,
     liveConnected: false,
     mediaFilter: "all",
+    // Dashboard view ("pipeline" | "stats") — segmented control on PANEL.
+    dashboardView: loadDashboardView(),
+    // Drill-down workspace when a pipeline node is clicked. null = no drill-down.
+    workspace: null,  // "esp" | "mqtt" | "wmbus" | "ha" | null
   };
 
   let liveSource = null;
@@ -690,11 +708,277 @@
     `;
   }
 
+  // ──────────────────────────────────────────────────────────────────────
+  // Dashboard view toggle — Pipeline vs Statystyki
+  // Segmented control that switches the top-of-PANEL section between the
+  // data-flow diagram (with drill-down nodes) and the speed-dial + funnel +
+  // sparkline view. User preference persists in localStorage.
+  // ──────────────────────────────────────────────────────────────────────
+  function dashboardViewToggle() {
+    const v = state.dashboardView;
+    const btn = (key, label, icon) => `
+      <button class="view-toggle-btn ${v === key ? "active" : ""}"
+              data-action="dashboard-view" data-view="${key}" type="button">
+        ${icon} ${escapeHtml(label)}
+      </button>`;
+    return `
+      <div class="view-toggle">
+        ${btn("pipeline", t("view_pipeline", "Pipeline"), "🔌")}
+        ${btn("stats",    t("view_stats",    "Statystyki"), "📊")}
+      </div>
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Pipeline header — ESP → MQTT → wmbusmeters → HA
+  // Each node shows a status dot and a one-line metric. Click drills down
+  // into a workspace panel below. The horizontal arrows carry the current
+  // telegrams/min rate so the user sees data flowing through every stage.
+  // ──────────────────────────────────────────────────────────────────────
+  function pipelineHeader(model) {
+    const data = state.data || {};
+    const pipe = model.pipe || {};
+    const mqtt = model.mqtt || {};
+    const esp  = (data.esp || {}).diag || {};
+    const espActive = Number(model.rate_source === "esp");
+    const cur  = Number(model.rate_current_min || 0);
+    const rateLabel = `${cur}/min`;
+
+    const cls = (active) => state.workspace === active ? "pipeline-node active" : "pipeline-node";
+    const dot = (ok, warn) => `<span class="dot ${ok ? "ok" : (warn ? "warn" : "bad")}"></span>`;
+
+    // ESP node — green when we have fresh diag, gray when no ESP / fallback to bridge
+    const espOk = espActive || (esp && Object.keys(esp).length > 0);
+    const espRssi = esp.avg_ok_rssi ? `${esp.avg_ok_rssi} dBm` : "—";
+
+    // wmbus shows both DECODE and LISTEN status compactly
+    const meterCount     = Number(model.meter_count || 0);
+    const candidateCount = Number(model.candidate_count || 0);
+
+    return `
+      <section class="section">
+        <div class="pipeline">
+          <button class="${cls("esp")}" data-action="open-workspace" data-ws="esp" type="button">
+            <div class="pipeline-icon">📡</div>
+            <div class="pipeline-title">ESP</div>
+            <div class="pipeline-meta">${dot(espOk, false)} ${espActive ? "active" : (espOk ? "seen" : "n/a")}</div>
+            <div class="pipeline-sub">${escapeHtml(espRssi)}</div>
+          </button>
+          <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
+          <button class="${cls("mqtt")}" data-action="open-workspace" data-ws="mqtt" type="button">
+            <div class="pipeline-icon">📨</div>
+            <div class="pipeline-title">MQTT</div>
+            <div class="pipeline-meta">${dot(!!model.mqtt_ok, false)} ${model.mqtt_ok ? "online" : "offline"}</div>
+            <div class="pipeline-sub">${escapeHtml((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))}</div>
+          </button>
+          <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
+          <button class="${cls("wmbus")}" data-action="open-workspace" data-ws="wmbus" type="button">
+            <div class="pipeline-icon">⚙</div>
+            <div class="pipeline-title">wmbusmeters</div>
+            <div class="pipeline-meta">${dot(!!model.wmbus_ok, candidateCount > 0 && meterCount === 0)} DEC | LIST</div>
+            <div class="pipeline-sub">${meterCount} / ${candidateCount}</div>
+          </button>
+          <div class="pipeline-arrow"><span>${escapeHtml(rateLabel)}</span></div>
+          <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
+            <div class="pipeline-icon">🏠</div>
+            <div class="pipeline-title">HA</div>
+            <div class="pipeline-meta">${dot(!!model.discovery_ok, false)} ${model.discovery_ok ? "✓" : "—"}</div>
+            <div class="pipeline-sub">${meterCount} entit.</div>
+          </button>
+        </div>
+        ${pipelineWorkspace(model)}
+      </section>
+    `;
+  }
+
+  // Drill-down panel under the pipeline diagram. Shown only when a node is
+  // selected (state.workspace != null). Closes via [← Powrót] button.
+  function pipelineWorkspace(model) {
+    if (!state.workspace) return "";
+    const data = state.data || {};
+    const back = `
+      <div class="workspace-back">
+        <button class="btn" data-action="close-workspace" type="button">← ${escapeHtml(t("workspace_back", "Back"))}</button>
+      </div>`;
+    let body = "";
+    if (state.workspace === "esp") {
+      const esp = data.esp || {};
+      const diag = esp.diag || {};
+      const sug  = esp.suggestion || {};
+      const hasDiag = Object.keys(diag).length > 0;
+      body = `
+        <h3>📡 ESP — ${escapeHtml(t("workspace_esp_title", "ESP diagnostics"))}</h3>
+        ${hasDiag ? objectKv(diag) : `<div class="empty">${escapeHtml(t("webui_no_diagnostics", "No diagnostic summary."))}</div>`}
+        ${Object.keys(sug).length ? `<h4 style="margin-top:14px;">💡 ${escapeHtml(t("webui_suggestion", "Suggestion"))}</h4>${objectKv(sug)}` : ""}
+      `;
+    } else if (state.workspace === "mqtt") {
+      const mqtt = model.mqtt || {};
+      const cfg  = model.cfg  || {};
+      body = `
+        <h3>📨 MQTT</h3>
+        <div class="kv">
+          <div>${escapeHtml(t("workspace_mqtt_host", "Broker"))}</div><div>${escapeHtml((mqtt.host || "—") + (mqtt.port ? ":" + mqtt.port : ""))}</div>
+          <div>${escapeHtml(t("workspace_mqtt_state", "Connected"))}</div><div>${model.mqtt_ok ? "✓ yes" : "✗ no"}</div>
+          <div>${escapeHtml(t("workspace_mqtt_raw_topic", "RAW topic"))}</div><div class="mono">${escapeHtml(cfg.raw_topic || "—")}</div>
+          <div>${escapeHtml(t("workspace_mqtt_state_prefix", "State prefix"))}</div><div class="mono">${escapeHtml(cfg.state_prefix || "—")}</div>
+          <div>${escapeHtml(t("workspace_mqtt_discovery_prefix", "Discovery prefix"))}</div><div class="mono">${escapeHtml(cfg.discovery_prefix || "—")}</div>
+        </div>
+      `;
+    } else if (state.workspace === "wmbus") {
+      const pipe = model.pipe || {};
+      const meterCount = Number(model.meter_count || 0);
+      const candidateCount = Number(model.candidate_count || 0);
+      body = `
+        <h3>⚙ wmbusmeters</h3>
+        <div class="kv">
+          <div>${escapeHtml(t("workspace_wmbus_decode", "DECODE instance"))}</div><div>${pipe.wmbusmeters_running ? "🟢 running" : "🔴 down"} — ${meterCount} ${escapeHtml(t("workspace_wmbus_meters_configured", "meters configured"))}</div>
+          <div>${escapeHtml(t("workspace_wmbus_listen", "LISTEN instance"))}</div><div>🟢 ${escapeHtml(t("workspace_wmbus_listen_desc", "parallel — always-on candidate visibility"))}</div>
+          <div>${escapeHtml(t("workspace_wmbus_candidates", "Candidates in air"))}</div><div>${candidateCount}</div>
+          <div>${escapeHtml(t("workspace_wmbus_decoded_total", "Decoded telegrams (session)"))}</div><div>${Number(model.decoded_count || 0)}</div>
+          <div>${escapeHtml(t("workspace_wmbus_last_decoded", "Last decoded"))}</div><div>${fmtTime(pipe.last_decoded_seen)}</div>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn warn" data-action="restart" type="button">${escapeHtml(t("restart_addon", "Restart add-on"))}</button>
+        </div>
+      `;
+    } else if (state.workspace === "ha") {
+      const cfg  = model.cfg || {};
+      const meterCount = Number(model.meter_count || 0);
+      body = `
+        <h3>🏠 ${escapeHtml(t("workspace_ha_title", "Home Assistant"))}</h3>
+        <div class="kv">
+          <div>${escapeHtml(t("discovery_label", "Discovery"))}</div><div>${model.discovery_ok ? "✓ published" : "✗ pending"}</div>
+          <div>${escapeHtml(t("workspace_ha_prefix", "Discovery prefix"))}</div><div class="mono">${escapeHtml(cfg.discovery_prefix || "—")}</div>
+          <div>${escapeHtml(t("workspace_ha_state_prefix", "State prefix"))}</div><div class="mono">${escapeHtml(cfg.state_prefix || "—")}</div>
+          <div>${escapeHtml(t("workspace_ha_entities", "Entities published"))}</div><div>${meterCount}</div>
+        </div>
+      `;
+    }
+    return `<div class="pipeline-workspace">${back}${body}</div>`;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Sparkline — inline SVG polyline of the last 15 minutes of telegrams/min.
+  // Bars (not line) chosen because rate fluctuates discretely per minute.
+  // Hovering a bar shows the exact value as a native tooltip.
+  // ──────────────────────────────────────────────────────────────────────
+  function sparkline15min(history) {
+    const rows = asArray(history);
+    if (!rows.length) {
+      return `<div style="font-size:11px;color:#607a88;">${escapeHtml(t("sparkline_no_data", "No data yet — wait for the first minute boundary"))}</div>`;
+    }
+    const max = Math.max(1, ...rows.map(r => Number(r.count || 0)));
+    const W = 280, H = 56, gap = 2;
+    const barW = Math.max(2, Math.floor((W - (rows.length - 1) * gap) / rows.length));
+    const bars = rows.map((r, i) => {
+      const v = Number(r.count || 0);
+      const h = Math.max(1, Math.round((v / max) * (H - 4)));
+      const x = i * (barW + gap);
+      const y = H - h;
+      return `<rect x="${x}" y="${y}" width="${barW}" height="${h}" fill="#00d4c8" rx="1"><title>${escapeHtml(String(v))} tel/min</title></rect>`;
+    }).join("");
+    return `
+      <svg class="sparkline" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;max-width:${W}px;height:${H}px;display:block;">
+        ${bars}
+      </svg>
+      <div style="display:flex;justify-content:space-between;font-size:10px;color:#607a88;margin-top:2px;">
+        <span>−${rows.length} min</span>
+        <span>${escapeHtml(t("sparkline_axis_now", "now"))}</span>
+      </div>
+    `;
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Stats view (alternative to pipeline) — speed dial + sparkline + funnel.
+  // Replaces the old mixed-style statsPanel. Funnel uses a consistent
+  // "max = candidate_count" baseline so the relative coverage is obvious.
+  // ──────────────────────────────────────────────────────────────────────
+  function statsViewSpeedDial(model) {
+    const cur  = Number(model.rate_current_min || 0);
+    const prev = Number(model.rate_prev_min || 0);
+    const avg  = Number(model.raw_per_min || 0);
+    const delta = cur - prev;
+    const trendColor = delta > 0 ? "#2de36f" : (delta < 0 ? "#ff646b" : "#8ea4b1");
+    const trendArrow = delta > 0 ? "↑" : (delta < 0 ? "↓" : "→");
+    const trendText  = `${delta > 0 ? "+" : ""}${delta}`;
+    const source = model.rate_source || "bridge";
+    const srcIcon  = source === "esp" ? "📡" : "⚙";
+
+    return `
+      <div class="speed-dial">
+        <div class="speed-dial-main">
+          <div class="speed-dial-value">${escapeHtml(String(cur))}</div>
+          <div class="speed-dial-unit">${escapeHtml(t("rate_tel_min", "tel / min"))}</div>
+        </div>
+        <div class="speed-dial-side">
+          <div>
+            <span style="color:${trendColor};font-weight:800;font-size:18px;">${trendArrow} ${escapeHtml(trendText)}</span>
+            <span style="font-size:11px;color:#8ea4b1;margin-left:6px;">${escapeHtml(t("rate_vs_prev", "vs previous"))} (${prev})</span>
+          </div>
+          <div style="font-size:11px;color:#8ea4b1;margin-top:6px;">
+            ${escapeHtml(t("rate_session_avg_label", "session avg"))}: <strong style="color:#cbd9e1;">${escapeHtml(String(avg))}</strong> ${escapeHtml(t("rate_tel_min", "tel / min"))}
+          </div>
+          <div style="font-size:10px;color:#4d6875;margin-top:4px;">
+            ${escapeHtml(t("rate_source_label", "Rate source"))}: <span style="color:${source === "esp" ? "#00bcd4" : "#607a88"};font-weight:700;">${srcIcon} ${escapeHtml(source)}</span>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <div style="font-size:11px;color:#8ea4b1;margin-bottom:4px;">${escapeHtml(t("sparkline_title", "Last 15 minutes"))}</div>
+        ${sparkline15min(model.rate_history_15m || [])}
+      </div>
+    `;
+  }
+
+  function statsViewFunnel(model) {
+    const candidates = Number(model.candidate_count || 0);
+    const meters     = Number(model.meter_count || 0);
+    // "Decodes live" = configured meters with at least one telegram in last 15 min.
+    // We approximate from session data — exact figure requires per-meter freshness check.
+    const liveMeters = asArray((state.data || {}).meters).filter(m => Number(m.seen_15m || 0) > 0).length;
+    const baseline   = Math.max(candidates, 1);
+    const pct1       = candidates > 0 ? Math.round((meters / candidates) * 100) : 0;
+    const pct2       = meters > 0     ? Math.round((liveMeters / meters) * 100) : 0;
+
+    const barW = (n) => Math.max(2, Math.round((n / baseline) * 100));
+    const row = (icon, label, value, pctOfTotal, pctOfPrev, pctLabel, color) => `
+      <div class="funnel-row">
+        <div class="funnel-row-head">
+          <span class="funnel-icon">${icon}</span>
+          <span class="funnel-label">${escapeHtml(label)}</span>
+          <span class="funnel-value">${escapeHtml(String(value))}</span>
+        </div>
+        <div class="funnel-bar"><span style="width:${pctOfTotal}%;background:${color};"></span></div>
+        ${pctLabel ? `<div class="funnel-pct">${escapeHtml(pctLabel)}</div>` : ""}
+      </div>`;
+    return `
+      <h3 style="margin:0 0 12px;font-size:14px;color:#cbd9e1;">🎯 ${escapeHtml(t("funnel_title", "Coverage"))}</h3>
+      ${row("📡", t("funnel_in_air",      "In air"),         candidates, 100,                  null, null, "#7e57c2")}
+      <div class="funnel-arrow">↓ ${pct1}% ${escapeHtml(t("funnel_of_air", "of air → configured"))}</div>
+      ${row("⚙",  t("funnel_configured",  "Configured"),     meters,     barW(meters),         null, null, "#26a69a")}
+      <div class="funnel-arrow">↓ ${pct2}% ${escapeHtml(t("funnel_of_conf", "of configured → live"))}</div>
+      ${row("✓",  t("funnel_live",        "Decodes live"),   liveMeters, barW(liveMeters),     null, null, "#2de36f")}
+    `;
+  }
+
+  function dashboardStatsView(model) {
+    return `
+      <section class="section">
+        <div class="card">
+          ${statsViewSpeedDial(model)}
+        </div>
+      </section>
+      <section class="section">
+        <div class="card">
+          ${statsViewFunnel(model)}
+        </div>
+      </section>
+    `;
+  }
+
   function dashboard() {
     const data = state.data || {};
     const model = data.model || {};
-    const pipe = model.pipe || {};
-    const mqtt = model.mqtt || {};
     const recentMeters = asArray(data.meters).slice(0, 6);
     const recentCandidates = asArray(data.candidates).slice(0, 6);
 
@@ -705,18 +989,16 @@
       return mid && !decodedIds.has(mid);
     });
 
+    // Top section depends on selected dashboard view.
+    const topSection = state.dashboardView === "stats"
+      ? dashboardStatsView(model)
+      : pipelineHeader(model);
+
     return `
-      <section class="section">
-        <div class="status-row">
-          ${statusCard("MQTT", !!model.mqtt_ok, mqtt.host ? `${mqtt.host}:${mqtt.port || ""}` : t("webui_mqtt_detail", "Broker connection"))}
-          ${statusCard(t("webui_raw_input", "Raw input"), !!model.raw_ok, `${number(pipe.raw_count)} ${t("raw_telegrams_metric", "telegrams")}`)}
-          ${statusCard("wmbusmeters", !!model.wmbus_ok, t("webui_wmbusmeters_detail", "Decoder process and decoded stream"))}
-          ${statusCard(t("discovery_label", "Discovery"), !!model.discovery_ok, t("webui_discovery_detail", "Home Assistant MQTT discovery"))}
-        </div>
-      </section>
+      ${dashboardViewToggle()}
+      ${topSection}
 
       ${dashboardPendingPanel(pending, model, data.analysis || {})}
-      ${statsPanel(model)}
 
       <section class="section ${Number(model.meter_count || 0) === 0 ? "grid two" : ""}">
         <div>
@@ -1680,6 +1962,33 @@
       } catch (error) {
         toast(error.message, true);
       }
+      return;
+    }
+
+    // Dashboard view switcher — pure client-side, persisted to localStorage.
+    if (action === "dashboard-view") {
+      const v = target.dataset.view || "pipeline";
+      if (v !== state.dashboardView) {
+        state.dashboardView = v;
+        saveDashboardView(v);
+        // Switching view also clears any open pipeline drill-down.
+        state.workspace = null;
+        render();
+      }
+      return;
+    }
+
+    // Pipeline node click → open drill-down workspace.
+    if (action === "open-workspace") {
+      const ws = target.dataset.ws || null;
+      state.workspace = (state.workspace === ws) ? null : ws;  // toggle off if same node clicked
+      render();
+      return;
+    }
+
+    if (action === "close-workspace") {
+      state.workspace = null;
+      render();
       return;
     }
 

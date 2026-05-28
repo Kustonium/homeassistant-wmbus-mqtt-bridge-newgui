@@ -37,6 +37,9 @@ CANDIDATE_ANALYSIS_TSV = BASE / "status_candidate_analysis.tsv"
 OPTIONS_JSON = BASE / "options.json"
 # Per-minute rate dashboard files written by bridge.sh
 STATUS_RATE_1M_JSON = BASE / "status_rate_1m.json"
+# 15-entry rolling history of telegrams/min (one row per finished minute).
+# Feeds the sparkline in the WebGUI Statystyki view.
+STATUS_RATE_HISTORY_FILE = BASE / "status_rate_history.tsv"
 STATUS_BRIDGE_START_FILE = BASE / "status_bridge_start.txt"
 # ESP diagnostic summary written by background subscriber in bridge.sh
 STATUS_ESP_DIAG_JSON = BASE / "status_esp_diag.json"
@@ -769,6 +772,22 @@ def status_model(data: dict) -> dict:
     except OSError:
         pass
 
+    # 15-minute rate history (sparkline) — read the rolling TSV written by
+    # bridge.sh whenever a minute boundary is crossed. Each row is
+    # epoch_minute<TAB>count. Returned as a list of {epoch_min, count} dicts;
+    # the WebGUI renders them as a sparkline polyline.
+    rate_history: list[dict] = []
+    try:
+        if STATUS_RATE_HISTORY_FILE.exists():
+            for line in STATUS_RATE_HISTORY_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+                if not line.strip():
+                    continue
+                parts = line.split("\t")
+                if len(parts) >= 2:
+                    rate_history.append({"epoch_min": safe_int(parts[0]), "count": safe_int(parts[1])})
+    except OSError:
+        pass
+
     return {
         "status": status,
         "cfg": cfg,
@@ -791,6 +810,7 @@ def status_model(data: dict) -> dict:
         "rate_current_min": rate_current_min,
         "rate_prev_min": rate_prev_min,
         "rate_source": rate_source,
+        "rate_history_15m": rate_history,
         "pending_restart": pending_restart,
     }
 
