@@ -952,17 +952,37 @@
   // Configured-meters panel on the Discover page — separate from the candidates
   // table. Shows the user's own meters with reception stats (15m/60m/interval)
   // sourced from status_meters.tsv (the DECODE-instance counters, kept live
-  // by the primary wmbusmeters). Each row carries a "Remove from config" button
-  // for quick removal without leaving the Discover view.
+  // by the primary wmbusmeters) AND the latest decoded value (e.g. 23.91 m³).
+  // The value column lets the user identify which configured ID is which
+  // physical meter by just reading the live counter.
+  //
+  // The "filter by value" input above the table replaces the legacy SEARCH-mode
+  // workflow: instead of typing an expected value blind, the user sees all
+  // live values and types a target — matching rows stay visible, others hide.
+  // Filtering is pure client-side DOM (rows have data-value); no re-render,
+  // no focus loss on every keystroke.
   function discoverConfiguredPanel(rows) {
     if (!rows.length) return "";
     return `
       <section class="section">
         <div class="section-head">
           <h2>${escapeHtml(t("configured_meters_panel_title", "Configured meters on air"))}</h2>
-          <span>${rows.length}</span>
+          <span id="discover-configured-count">${rows.length}</span>
         </div>
         <p style="font-size:11px;color:#607a88;margin:0 0 10px;">${escapeHtml(t("configured_meters_panel_sub", "These IDs are already in your options.json. The parallel listen instance keeps their reception stats live."))}</p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;padding:8px 12px;background:#0e1a23;border:1px solid #1e3040;border-radius:6px;">
+          <label for="discover-search-value" style="font-size:12px;color:#9eafba;">${escapeHtml(t("filter_by_value", "Filter by value"))}:</label>
+          <input id="discover-search-value" type="text" inputmode="decimal" placeholder="e.g. 23.91"
+            style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:120px;font-family:monospace;"
+            oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
+          <span style="font-size:12px;color:#607a88;">±</span>
+          <input id="discover-search-tolerance" type="text" inputmode="decimal" value="0.05"
+            style="background:#0a1217;border:1px solid #2a4555;color:#e8f1f8;border-radius:4px;padding:5px 8px;font-size:12px;width:70px;font-family:monospace;"
+            oninput="window.__discoverFilterByValue && window.__discoverFilterByValue()">
+          <button type="button" class="btn"
+            style="font-size:11px;padding:4px 10px;"
+            onclick="var v=document.getElementById('discover-search-value'); if(v){v.value='';} window.__discoverFilterByValue && window.__discoverFilterByValue();">${escapeHtml(t("filter_clear", "Clear"))}</button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -971,6 +991,7 @@
                 <th>${escapeHtml(t("webui_name", "Name"))}</th>
                 <th>${escapeHtml(t("driver", "Driver"))}</th>
                 <th>${escapeHtml(t("media", "Medium"))}</th>
+                <th>${escapeHtml(t("value_label", "Value"))}</th>
                 <th>${escapeHtml(t("webui_last_seen", "Last seen"))}</th>
                 <th>15m</th>
                 <th>60m</th>
@@ -978,7 +999,7 @@
                 <th></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody id="discover-configured-tbody">
               ${rows.map(row => {
                 const id           = row.id || "";
                 const lastSeenDate = row.last_seen ? new Date(row.last_seen) : null;
@@ -989,12 +1010,23 @@
                 const seen60mAdj = ageS > 60 * 60 ? 0 : Number(row.seen_60m || 0);
                 const {icon: mIcon, mc} = mediaIcon(row.media || "", row.driver || "");
                 const mediaLabel = t(`media_${mc}`, mc);
+                const unit       = unitFromKey(row.value_key || "");
+                const valueStr   = (row.value && row.value !== "-") ? row.value : "—";
+                // data-value carries the parsed numeric value for the filter.
+                // Non-numeric ("—") becomes empty so the row is hidden when
+                // any filter is active (no value to compare against).
+                const numericVal = parseFloat(valueStr);
+                const dataVal    = Number.isFinite(numericVal) ? String(numericVal) : "";
                 return `
-                  <tr>
+                  <tr data-value="${escapeHtml(dataVal)}">
                     <td><strong>${escapeHtml(id)}</strong></td>
                     <td><span style="margin-right:5px;font-size:15px;vertical-align:middle;">${mIcon}</span>${escapeHtml(row.name || id || "-")}</td>
                     <td>${escapeHtml(row.driver || "-")}</td>
                     <td>${escapeHtml(mediaLabel)}</td>
+                    <td>
+                      <span style="font-weight:700;">${escapeHtml(valueStr)}</span>${unit ? ` <span class="mono" style="color:#9eafba;font-size:11px;">${escapeHtml(unit)}</span>` : ""}
+                      ${row.value_key ? `<div class="mono" style="font-size:10px;color:#4a6070;">${escapeHtml(row.value_key)}</div>` : ""}
+                    </td>
                     <td>${fmtTime(row.last_seen)}</td>
                     <td>${escapeHtml(String(seen15mAdj))}</td>
                     <td>${escapeHtml(String(seen60mAdj))}</td>
@@ -1008,6 +1040,45 @@
       </section>
     `;
   }
+
+  // Live value filter for the discover-configured table.
+  // Exposed on window so inline `oninput=` handlers in the rendered HTML
+  // can call it without going through the IIFE closure. Operates on DOM
+  // directly (display:none on non-matching rows) — no re-render, no focus
+  // loss on every keystroke.
+  window.__discoverFilterByValue = function () {
+    const valInp = document.getElementById("discover-search-value");
+    const tolInp = document.getElementById("discover-search-tolerance");
+    const tbody  = document.getElementById("discover-configured-tbody");
+    const countEl = document.getElementById("discover-configured-count");
+    if (!tbody) return;
+    const trs = Array.from(tbody.querySelectorAll("tr"));
+    const total = trs.length;
+
+    const searchStr = ((valInp && valInp.value) || "").trim();
+    if (searchStr === "") {
+      trs.forEach(r => { r.style.display = ""; });
+      if (countEl) countEl.textContent = String(total);
+      return;
+    }
+    const searchVal = parseFloat(searchStr.replace(",", "."));
+    const tolerance = parseFloat(((tolInp && tolInp.value) || "0.05").replace(",", ".")) || 0.05;
+    if (!Number.isFinite(searchVal)) {
+      // Invalid input — show all rows so the user isn't left with an empty table.
+      trs.forEach(r => { r.style.display = ""; });
+      if (countEl) countEl.textContent = String(total);
+      return;
+    }
+
+    let matched = 0;
+    trs.forEach(r => {
+      const rowVal = parseFloat(r.dataset.value);
+      const match  = Number.isFinite(rowVal) && Math.abs(rowVal - searchVal) <= tolerance;
+      r.style.display = match ? "" : "none";
+      if (match) matched++;
+    });
+    if (countEl) countEl.textContent = `${matched} / ${total}`;
+  };
 
   function discoverPage() {
     const data = state.data || {};
