@@ -1,462 +1,265 @@
-# Home Assistant Add-on: wMBus MQTT Bridge
+# Home Assistant Add-on: wMBus MQTT Bridge NewGUI
 
-**Szybka nawigacja / Quick navigation:**
-[🇵🇱 PL (poniżej)](#-opis-pl) · [🇬🇧 EN (below)](#-description-en)
+**Dokumentacja / Documentation**
 
-**Pełna dokumentacja / Full documentation:**
-[🇵🇱 PL](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.pl.md) · [🇬🇧 EN](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.en.md) · [🇩🇪 DE](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.de.md) · [🇨🇿 CS](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.cs.md) · [🇸🇰 SK](https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge/blob/main/docs/README.sk.md)
+- [PL](docs/README.pl.md)
+- [EN](docs/README.en.md)
+- [DE](docs/README.de.md)
+- [CS](docs/README.cs.md)
+- [SK](docs/README.sk.md)
 
-> ⚠️ Tłumaczenia maszynowe — mogą zawierać błędy w dowolnym języku, w tym PL i EN. / Machine-generated translations — may contain errors in any language, including PL and EN.
+Ten dokument jest skrótem PL/EN. Pełne dokumenty językowe są w katalogu `docs/`.
+Pliki dokumentacji pochodzą ze starej wersji projektu i zostały utrzymane w tych
+samych językach: polski, angielski, niemiecki, czeski i słowacki.
 
----
-
-## 🇵🇱 Opis (PL)
-
-Ten dodatek Home Assistant jest rozszerzeniem oraz forkiem oficjalnego projektu **wmbusmeters-ha-addon**, który bazuje na narzędziu **wmbusmeters**.
-
-Celem projektu jest dekodowanie telegramów Wireless M-Bus (C1 / T1 / S1) w Home Assistant **bez użycia lokalnego dongla radiowego** (USB/RTL-SDR). Zamiast tego wykorzystuje **zewnętrzne odbiorniki** (np. ESP32/gateway/bridge) i **MQTT jako kanał wejściowy**.
-
-Add-on konsumuje surowe ramki wMBus w formacie HEX z MQTT i jest typowo używany razem z firmware [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) działającym na ESP32 z układem radiowym **CC1101, SX1276 lub SX1262**. Oba projekty tworzą pipeline (ESP odbiera radio → MQTT raw hex → ten add-on dekoduje → HA), ale są **niezależne**: add-on przyjmuje hex z dowolnego źródła publikującego na skonfigurowany `raw_topic`.
-
-### Problem, który rozwiązuje ten add-on
-
-Oryginalny **wmbusmeters-ha-addon**:
-- zakłada, że odbiór radiowy odbywa się lokalnie (USB / serial / RTL-SDR),
-- nie przewiduje podania telegramów z zewnętrznego źródła,
-- nie obsługuje wejścia **STDIN** jako źródła danych.
-
-W praktyce oznacza to, że odbiorniki ESP32, gatewaye, mosty radiowe (bridge) i własne odbiorniki wM-Bus nie mogą być użyte bezpośrednio jako źródło danych dla wmbusmeters w oficjalnym add-onie.
-
-### Rozwiązanie zastosowane w tym projekcie
-
-Ten fork wprowadza alternatywną ścieżkę wejściową opartą o MQTT. Add-on działa jako most (bridge) pomiędzy zewnętrznym źródłem telegramów wM-Bus a silnikiem dekodującym **wmbusmeters**.
-
-### Architektura przepływu danych
-
-```
-ESP32 / Gateway / Bridge
-→ MQTT (surowy telegram wM-Bus w formacie HEX)
-→ wmbusmeters (stdin:hex)
-→ MQTT (JSON)
-→ Home Assistant (MQTT Discovery)
-```
-
-### Kluczowe cechy
-
-- **MQTT jako wejście danych** — surowe telegramy wM-Bus (HEX) odbierane z wybranego tematu MQTT.
-- **Wejście STDIN dla wmbusmeters** — telegramy przekazywane przez `stdin:hex`, czego oryginalny add-on nie obsługuje.
-- **Pełne dekodowanie przez wmbusmeters** — projekt nie zastępuje wmbusmeters, lecz wykorzystuje go w całości.
-- **MQTT + Home Assistant Discovery** — dane publikowane w MQTT i automatycznie rejestrowane w HA.
-- **Tryb LISTEN (nasłuch)** — gdy lista `meters` jest pusta, add-on wypisuje w logach wszystkie słyszane liczniki wraz z sugerowanym driverem.
-
-### Wymagania (WAŻNE)
-
-Add-on domyślnie korzysta z wewnętrznego brokera MQTT Home Assistant (Mosquitto add-on), ale może pracować z brokerem zewnętrznym.
-
-**Tryby brokera (`mqtt_mode`):**
-- `auto` (domyślnie) — używa brokera HA jeśli dostępny, w przeciwnym razie zewnętrzny
-- `ha` — wymusza broker HA (Mosquitto add-on)
-- `external` — zawsze używa ustawień zewnętrznych (`external_mqtt_host`, itd.)
-
-### ⚙️ Uwaga o AI, dokumentacji i tłumaczeniach
-
-Projekt jest **rozwijany z użyciem AI**. Rolą człowieka (**Kustonium**) jest testowanie, walidacja i decyzje architektoniczne (human-in-the-loop) — nie pisanie kodu znak po znaku.
-
-Wszystkie pliki tekstowe widoczne dla użytkownika — README, dokumentacja w `docs/`, tłumaczenia interfejsu WebUI w [`rootfs/usr/bin/i18n.py`](rootfs/usr/bin/i18n.py), CHANGELOG, komunikaty — są generowane maszynowo. Mogą zawierać błędy lub nienaturalne sformułowania w **dowolnym języku, włącznie z polskim i angielskim**, nie tylko w niemieckim, czeskim czy słowackim.
+Machine-generated translations may contain mistakes in every language, including
+Polish and English.
 
 ---
 
-### Konfiguracja w Home Assistant (GUI)
+## PL - co to jest
 
-Konfiguracja odbywa się przez interfejs graficzny dodatku — nie trzeba edytować plików ręcznie.
+`wMBus MQTT Bridge NewGUI` dekoduje telegramy Wireless M-Bus bez lokalnego
+dongla radiowego przy Home Assistant. Zewnętrzny odbiornik, na przykład ESP32 z
+CC1101/SX1276/SX1262, publikuje surowy telegram HEX do MQTT, a ten add-on podaje
+go do `wmbusmeters` przez `stdin:hex`.
 
-#### Krok 1 — Tryb LISTEN (wykrycie liczników)
-
-Zostaw sekcję **meters** pustą i uruchom addon. W logach pojawią się wykryte liczniki:
-
-```
-Received telegram from: 41553221
-          manufacturer: (TCH) Techem
-                  type: Cold water
-                driver: mkradio3
-=== NEW METER CANDIDATE DETECTED ===
-Received telegram from: 41553221
-Suggested driver: mkradio3
-```
-
-Zanotuj **8-cyfrowy numer** (`meter_id`) i sugerowany **driver**.
-
-#### Krok 2 — Dodanie licznika w GUI
-
-W konfiguracji dodatku wypełnij sekcję **meters**:
-
-| Pole | Opis | Przykład |
-|------|------|---------|
-| `id` | Twoja własna nazwa sensora w HA | `woda_zimna_lazienka` |
-| `meter_id` | 8-cyfrowy numer z trybu LISTEN | `41553221` |
-| `type` | Driver z trybu LISTEN | `mkradio3` |
-| `key` | Klucz szyfrowania (jeśli licznik szyfruje) | `00112233...` lub puste |
-
-Jeśli licznik nie szyfruje telegramów, pole `key` pozostaw puste.
-
-#### Opcjonalnie — tryb SEARCH (dopasowanie po stanie licznika)
-
-Tryb `search_mode` pomaga znaleźć właściwy licznik w budynku, gdy w trybie LISTEN pojawia się dużo obcych urządzeń.
-
-Działa dwuetapowo:
-
-1. Przy pustej liście `meters` add-on zbiera kandydatów z logów LISTEN i zapisuje ich w:
-   `/data/search_candidates.tsv`
-2. Po restarcie add-on tworzy tymczasowe liczniki `search_<meter_id>`, dekoduje ich JSON-y i porównuje wartości `total_m3` z podanym odczytem.
-3. Gdy znajdzie pasujący licznik, wypisuje tylko czytelny wynik `SEARCH MATCH` oraz gotową konfigurację `SEARCH SUGGESTED CONFIG`.
-
-Przykład wyniku:
+Przepływ danych:
 
 ```text
-[wmbus-bridge][WARN] SEARCH MATCH: id=03534159 driver=hydrodigit media=water field=total_m3 value=23.932 m3 expected=23.93 diff=0.002000 m3
-[wmbus-bridge][WARN] SEARCH SUGGESTED CONFIG: {"id":"meter_03534159","meter_id":"03534159","type":"hydrodigit","type_other":"","key":""}
+ESP32 / gateway / bridge
+  -> MQTT raw HEX, domyślnie wmbus/+/telegram
+  -> bridge.sh
+  -> wmbusmeters --useconfig /data
+  -> MQTT state, domyślnie wmbusmeters/<id>/...
+  -> Home Assistant MQTT Discovery, domyślnie homeassistant/...
 ```
 
-Zalecana konfiguracja:
+Projekt jest forkiem i rozwinięciem `wmbusmeters-ha-addon`, ale ma nową warstwę
+WebGUI. Stary serwerowy HTML został zastąpiony statycznym SPA w
+`rootfs/usr/share/wmbus-webui`, które rozmawia z `webui.py` przez API i live
+events.
 
-| Pole | Zalecenie |
-|------|-----------|
-| `search_mode` | `true` tylko na czas szukania licznika |
-| `search_expected_value_m3` | aktualny odczyt z fizycznego licznika, np. `23.93` albo `23,93` |
-| `search_tolerance_m3` | zwykle `0.05` (50 litrów); nie używaj szerokiej tolerancji typu `0.5` w bloku |
-| `search_topic` | opcjonalny temat MQTT dla wyników, domyślnie `wmbus/search/candidates` |
+### Najważniejsze funkcje
 
-Ważne zasady:
+- MQTT jako wejście dla surowych telegramów HEX.
+- Dekodowanie przez upstream `wmbusmeters`, bez własnego dekodera w projekcie.
+- Home Assistant add-on z Ingress oraz tryb Docker standalone.
+- Nowe WebGUI typu SPA: dashboard live, tabele, filtry, logi, ESP logs,
+  ustawienia i widok About.
+- Live refresh przez `EventSource` na `/api/events`; fallback do zwykłego
+  odpytywania, gdy SSE nie jest dostępne.
+- Wielojęzyczny interfejs: `en`, `pl`, `de`, `cs`, `sk`.
+- Tryb LISTEN, DECODE z równoległym LISTEN oraz ukryty/zaawansowany tryb SEARCH.
+- Soft reload pipeline po dodaniu/usunięciu licznika, bez pełnego restartu
+  kontenera tam, gdzie wystarcza przeładowanie `wmbusmeters`.
 
-- SEARCH służy tylko do identyfikacji licznika — po znalezieniu ID wyłącz `search_mode`.
-- Tymczasowe liczniki `search_*` nie powinny tworzyć encji Home Assistant.
-- Po znalezieniu licznika skopiuj `SEARCH SUGGESTED CONFIG` do sekcji `meters`.
-- Po zakończeniu szukania usuń `/data/search_candidates.tsv`, jeśli chcesz zacząć kolejne wyszukiwanie od czystej listy.
-- Dla wodomierzy w bloku ustawiaj wąską tolerancję, np. `0.05`, bo wiele cudzych liczników może mieć podobny stan.
+### WebGUI
+
+Widoczne trasy:
+
+- `#/dashboard` - pipeline albo statystyki, przełączane w dashboardzie.
+- `#/meters` - skonfigurowane liczniki oraz pending meters.
+- `#/discover` - kandydaci z LISTEN, filtrowanie, preview value, dodawanie,
+  ignorowanie i przywracanie.
+- `#/logs` - zdarzenia runtime bridge/WebUI.
+- `#/esp-logs` - diagnostyka ESP, zdarzenia i sugestie.
+- `#/settings` - podgląd aktualnej konfiguracji i runtime.
+- `#/about` - informacje o wersji, ścieżkach i projekcie.
+
+Zaawansowana trasa `#/search` nadal istnieje, ale nie jest główną ścieżką pracy.
+Najczęstsze identyfikowanie licznika odbywa się teraz w `#/discover` przez
+preview value oraz filtr po wartości.
+
+### Home Assistant
+
+Add-on używa `config.yaml`:
+
+- `ingress: true`
+- `ingress_port: 8099`
+- `hassio_api: true`
+- `panel_title: wMBus Bridge NewGUI`
+- domyślny `raw_topic: wmbus/+/telegram`
+
+Tryb MQTT:
+
+- `auto` - użyj brokera HA, jeśli jest dostępny; w innym razie external.
+- `ha` - wymuś broker Home Assistant.
+- `external` - użyj `external_mqtt_host`, `external_mqtt_port`,
+  `external_mqtt_username`, `external_mqtt_password`.
+
+### Docker standalone
+
+Docker używa `docker/entrypoint.sh`. Domyślny katalog danych to `/config`, a
+WebGUI startuje na porcie `8099`.
+
+Minimalny `docker-compose.yml` powinien wystawić port WebGUI i zamontować
+zapisywalny katalog konfiguracji:
+
+```yaml
+services:
+  wmbus:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: addon
+    entrypoint: ["/usr/bin/docker-entrypoint.sh"]
+    ports:
+      - "8099:8099"
+    volumes:
+      - ./config:/config
+    environment:
+      WMBUS_BASE: /config
+      WEBUI_PORT: 8099
+```
+
+`docker/entrypoint.sh` tworzy `/config/options.json`, jeśli go nie ma, czyta z
+niego ustawienia MQTT i uruchamia równolegle `webui.py` oraz `bridge.sh`.
+
+### Najważniejsze pliki runtime
+
+W Home Assistant bazą jest `/data`, w Dockerze zwykle `/config`.
+
+- `options.json` - konfiguracja użytkownika.
+- `status.json` - status MQTT/pipeline/config.
+- `status_meters.tsv` - ostatnio dekodowane skonfigurowane liczniki.
+- `status_candidates.tsv` - kandydaci z LISTEN.
+- `status_events.tsv` - zdarzenia runtime.
+- `status_rate_1m.json` i `status_rate_history.tsv` - statystyki telegramów.
+- `status_candidate_values.tsv` - preview value dla kandydatów.
+- `status_esp_telegram_devices.tsv` - aktywne ESP wykryte z topicu RAW.
+- `status_esp_events.tsv`, `status_esp_diag.json` - diagnostyka ESP.
+- `.reload_pipeline`, `.reload_listen` - flagi miękkiego przeładowania.
+
+### Licencja i atrybucje
+
+Cały projekt jest dystrybuowany na licencji GNU GPL v3.0. Pełny tekst jest w
+pliku [LICENSE](LICENSE).
+
+Projekt zawiera i modyfikuje kod pochodzący z:
+
+- `wmbusmeters` - https://github.com/wmbusmeters/wmbusmeters - GPL-3.0
+- `wmbusmeters-ha-addon` - https://github.com/wmbusmeters/wmbusmeters-ha-addon - GPL-3.0
+
+Nowe WebGUI jest inspirowane sposobem pracy Zigbee2MQTT: osobny frontend,
+backend API i odświeżanie live. Według obecnego porównania lokalnego repo nie
+zawiera skopiowanego kodu ani assetów Zigbee2MQTT. Jeżeli w przyszłości taki kod
+zostanie dodany, trzeba zachować odpowiednie copyright notices i warunki GPL-3.0.
+
+`rootfs/usr/share/wmbus-webui/assets/morphdom.min.js` jest biblioteką `morphdom`
+na licencji MIT. Szczegóły są w [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ---
 
-### Docker standalone (bez Home Assistant)
+## EN - what it is
 
-W trybie Docker konfiguracja odbywa się przez plik `options.json`.
+`wMBus MQTT Bridge NewGUI` decodes Wireless M-Bus telegrams without a local radio
+dongle attached to Home Assistant. An external receiver, for example an ESP32
+with CC1101/SX1276/SX1262, publishes raw HEX telegrams to MQTT, and this add-on
+feeds them into `wmbusmeters` through `stdin:hex`.
 
-#### Szybki start (Docker Compose — DietPi/Ubuntu)
-
-```bash
-git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
-mkdir -p /home/wmbus-test
-cp -a homeassistant-wmbus-mqtt-bridge/docker/examples/* /home/wmbus-test/
-cd /home/wmbus-test
-docker compose up -d --build
-docker compose logs -f wmbus
-```
-
-Jeśli widzisz `No meters configured -> LISTEN MODE` — kontener działa i czeka na telegramy.
-
-#### Konfiguracja (Docker)
-
-Główny plik: `./config/options.json` (wewnątrz kontenera: `/config/options.json`).
-
-Pliki pod `./config/etc/` są **generowane automatycznie** przy każdym starcie — nie edytuj ich ręcznie, zostaną nadpisane.
-
-**Pola wpisu licznika:**
-
-| Pole | Opis |
-|------|------|
-| `id` | Twoja własna etykieta (część tematu MQTT i nazwa sensora w HA) |
-| `meter_id` | 8-cyfrowy numer seryjny licznika (z trybu LISTEN) |
-| `type` | Driver wmbusmeters (z trybu LISTEN), lub `auto` |
-| `type_other` | Niestandardowy driver — wypełnij tylko gdy `type` = `other` |
-| `key` | Klucz szyfrowania w formacie HEX; zostaw puste, jeśli licznik nie szyfruje |
-
-Przykład `options.json`:
-
-```json
-{
-  "raw_topic": "wmbus_bridge/+/telegram",
-  "loglevel": "normal",
-  "filter_hex_only": true,
-  "discovery_enabled": true,
-  "state_prefix": "wmbusmeters",
-  "search_mode": false,
-  "search_expected_value_m3": "0",
-  "search_tolerance_m3": "0.05",
-  "mqtt_mode": "external",
-  "external_mqtt_host": "192.168.1.10",
-  "external_mqtt_port": 1883,
-  "external_mqtt_username": "user",
-  "external_mqtt_password": "pass",
-  "meters": [
-    {
-      "id": "woda_zimna_lazienka",
-      "meter_id": "41553221",
-      "type": "mkradio3",
-      "key": ""
-    },
-    {
-      "id": "cieplo_mieszkanie",
-      "meter_id": "03534275",
-      "type": "hydrodigit",
-      "key": "00112233445566778899AABBCCDDEEFF"
-    }
-  ]
-}
-```
-
-Po zmianach zrestartuj kontener:
-
-```bash
-docker compose restart wmbus
-```
-
-#### Uwagi
-
-- Katalog `./config` musi być **zapisywalny** (nie montuj jako `:ro`) — bridge tworzy tam `options.json` i konfigurację wmbusmeters.
-- Domyślny `raw_topic` to `wmbus_bridge/+/telegram` — upewnij się, że Twój odbiornik publikuje na ten sam temat.
-
-#### Ręczny test MQTT
-
-```bash
-mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/any/telegram' -m '<HEX_TELEGRAM>'
-mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
-```
-
----
-
-### Przeznaczenie
-
-Ten add-on jest szczególnie przydatny gdy:
-- odbiór radiowy realizowany jest poza Home Assistant (ESP32, SBC, bridge),
-- chcesz używać wmbusmeters bez dongla USB,
-- masz własny pipeline radiowy i potrzebujesz tylko dekodera + integracji z HA.
-
-⚠️ **Nie instaluj oficjalnego add-onu wmbusmeters równolegle.** Ten add-on zawiera własną instancję wmbusmeters i zastępuje go w tym scenariuszu.
-
-### Projekty bazowe (upstream)
-
-- **wmbusmeters** — https://github.com/wmbusmeters/wmbusmeters (GPL-3.0)
-- **wmbusmeters-ha-addon** — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
-
-### Licencja
-
-Repozytorium zawiera i modyfikuje kod z projektu **wmbusmeters-ha-addon** objętego licencją GPL-3.0. Cały projekt dystrybuowany jest na licencji:
-
-**GNU General Public License v3.0 (GPL-3.0)**
-
----
-
-## 🇬🇧 Description (EN)
-
-This Home Assistant add-on is a fork and extension of the official **wmbusmeters-ha-addon**, based on **wmbusmeters**.
-
-The purpose of this add-on is to decode Wireless M-Bus (C1 / T1 / S1) telegrams in Home Assistant **without a local radio dongle** (USB/RTL-SDR). Instead, it uses **external receivers** (ESP32/gateway/bridge) and **MQTT as the input transport**.
-
-This add-on consumes raw wMBus hex frames from MQTT and is typically paired with the companion firmware [`esphome-wmbus-bridge-rawonly`](https://github.com/Kustonium/esphome-wmbus-bridge-rawonly) running on an ESP32 with a **CC1101, SX1276 or SX1262** radio. The two projects work as a pipeline (ESP receives radio → MQTT raw hex → this add-on parses → HA), but each is **independent**: this add-on accepts hex from any source publishing to the configured `raw_topic`.
-
-### The problem it solves
-
-The original **wmbusmeters-ha-addon** assumes local radio reception and does not accept external telegram sources or STDIN input. ESP32-based receivers, gateways and custom wM-Bus bridges cannot be used directly as data sources with the official add-on.
-
-### Solution
-
-This fork introduces an MQTT-based input path:
-
-```
-ESP32 / Gateway / Bridge
-→ MQTT (raw wM-Bus HEX telegram)
-→ wmbusmeters (stdin:hex)
-→ MQTT (JSON)
-→ Home Assistant (MQTT Discovery)
-```
-
-### Key features
-
-- MQTT input for raw wM-Bus telegrams
-- STDIN support for wmbusmeters (`stdin:hex`)
-- Full decoding handled by upstream wmbusmeters
-- MQTT output with Home Assistant Discovery
-- LISTEN mode: when `meters` list is empty, logs all detected meter IDs and suggested drivers
-
-### Broker modes (`mqtt_mode`)
-
-- `auto` (default) — use HA broker if available, otherwise external
-- `ha` — force HA broker (Mosquitto add-on)
-- `external` — always use external settings (`external_mqtt_host`, etc.)
-
-### ⚙️ Notice on AI, documentation and translations
-
-This project is **AI-developed**. The human role (**Kustonium**) is testing, validation and architectural decisions (human-in-the-loop) — not writing code character by character.
-
-All user-facing text files — READMEs, the documentation under `docs/`, the WebUI translations in [`rootfs/usr/bin/i18n.py`](rootfs/usr/bin/i18n.py), the CHANGELOG, log messages — are machine-generated. They may contain errors or unnatural phrasing in **any language, including Polish and English**, not only in German, Czech or Slovak.
-
----
-
-### Configuration in Home Assistant (GUI)
-
-Configuration is done through the add-on GUI — no manual file editing required.
-
-#### Step 1 — LISTEN mode (meter discovery)
-
-Leave the **meters** list empty and start the add-on. The log will show all received telegrams:
-
-```
-Received telegram from: 41553221
-          manufacturer: (TCH) Techem
-                  type: Cold water
-                driver: mkradio3
-=== NEW METER CANDIDATE DETECTED ===
-Received telegram from: 41553221
-Suggested driver: mkradio3
-```
-
-Note the **8-digit number** (`meter_id`) and the suggested **driver**.
-
-#### Step 2 — Add a meter in the GUI
-
-Fill in the **meters** section in the add-on configuration:
-
-| Field | Description | Example |
-|-------|-------------|---------|
-| `id` | Your own sensor name in HA | `cold_water_bathroom` |
-| `meter_id` | 8-digit number from LISTEN mode | `41553221` |
-| `type` | Driver from LISTEN mode | `mkradio3` |
-| `key` | Encryption key (if meter encrypts) | `00112233...` or leave empty |
-
-If the meter does not encrypt telegrams, leave `key` empty.
-
-#### Optional — SEARCH mode (matching by meter reading)
-
-`search_mode` helps identify the correct meter in buildings where LISTEN mode sees many nearby devices.
-
-It works in two stages:
-
-1. With an empty `meters` list, the add-on collects LISTEN candidates and stores them in:
-   `/data/search_candidates.tsv`
-2. After restart, the add-on creates temporary `search_<meter_id>` meters, decodes their JSON output and compares `total_m3` with the expected physical reading.
-3. When a match is found, it prints a readable `SEARCH MATCH` line and a ready-to-copy `SEARCH SUGGESTED CONFIG`.
-
-Example output:
+Data flow:
 
 ```text
-[wmbus-bridge][WARN] SEARCH MATCH: id=03534159 driver=hydrodigit media=water field=total_m3 value=23.932 m3 expected=23.93 diff=0.002000 m3
-[wmbus-bridge][WARN] SEARCH SUGGESTED CONFIG: {"id":"meter_03534159","meter_id":"03534159","type":"hydrodigit","type_other":"","key":""}
+ESP32 / gateway / bridge
+  -> MQTT raw HEX, default wmbus/+/telegram
+  -> bridge.sh
+  -> wmbusmeters --useconfig /data
+  -> MQTT state, default wmbusmeters/<id>/...
+  -> Home Assistant MQTT Discovery, default homeassistant/...
 ```
 
-Recommended settings:
+The project is a fork and extension of `wmbusmeters-ha-addon`, but it now has a
+new WebGUI layer. The old server-rendered HTML was replaced with a static SPA in
+`rootfs/usr/share/wmbus-webui`, backed by `webui.py` API endpoints and live
+events.
 
-| Field | Recommendation |
-|-------|----------------|
-| `search_mode` | `true` only while identifying a meter |
-| `search_expected_value_m3` | current physical meter reading, for example `23.93` or `23,93` |
-| `search_tolerance_m3` | usually `0.05` (50 liters); avoid wide values such as `0.5` in apartment blocks |
-| `search_topic` | optional MQTT topic for search results, default: `wmbus/search/candidates` |
+### Main features
 
-Important rules:
+- MQTT input for raw HEX telegrams.
+- Decoding by upstream `wmbusmeters`; this project does not reimplement the
+  decoder.
+- Home Assistant add-on with Ingress and standalone Docker mode.
+- New SPA WebGUI: live dashboard, tables, filters, logs, ESP logs, settings and
+  About view.
+- Live refresh through `EventSource` on `/api/events`; polling fallback when SSE
+  is unavailable.
+- Multilingual UI: `en`, `pl`, `de`, `cs`, `sk`.
+- LISTEN mode, DECODE with parallel LISTEN, and hidden/advanced SEARCH mode.
+- Soft pipeline reload after adding/removing meters when a full container
+  restart is not required.
 
-- SEARCH is only for meter identification — disable `search_mode` after finding the ID.
-- Temporary `search_*` meters should not create Home Assistant entities.
-- Copy `SEARCH SUGGESTED CONFIG` into the `meters` section after finding the match.
-- Remove `/data/search_candidates.tsv` after searching if you want the next search to start from a clean candidate list.
-- Use a narrow tolerance for water meters in apartment blocks, for example `0.05`, because many nearby meters may have similar readings.
+### WebGUI
 
----
+Visible routes:
 
-### Docker standalone (without Home Assistant)
+- `#/dashboard` - pipeline or statistics view, selected inside the dashboard.
+- `#/meters` - configured meters and pending meters.
+- `#/discover` - LISTEN candidates, filters, preview value, add, ignore and
+  restore.
+- `#/logs` - bridge/WebUI runtime events.
+- `#/esp-logs` - ESP diagnostics, events and suggestions.
+- `#/settings` - current configuration and runtime snapshot.
+- `#/about` - version, paths and project information.
 
-In Docker mode, configuration is done via `options.json`.
+Advanced route `#/search` still exists, but it is no longer the main workflow.
+The usual identification workflow now lives in `#/discover` through preview
+value and value filtering.
 
-#### Quick start (Docker Compose — DietPi/Ubuntu)
+### Home Assistant
 
-```bash
-git clone https://github.com/Kustonium/homeassistant-wmbus-mqtt-bridge.git
-mkdir -p /home/wmbus-test
-cp -a homeassistant-wmbus-mqtt-bridge/docker/examples/* /home/wmbus-test/
-cd /home/wmbus-test
-docker compose up -d --build
-docker compose logs -f wmbus
-```
+The add-on is configured by `config.yaml`:
 
-If you see `No meters configured -> LISTEN MODE` — the container is running and waiting for telegrams.
+- `ingress: true`
+- `ingress_port: 8099`
+- `hassio_api: true`
+- `panel_title: wMBus Bridge NewGUI`
+- default `raw_topic: wmbus/+/telegram`
 
-#### Configuration (Docker)
+MQTT mode:
 
-Main file: `./config/options.json` (inside container: `/config/options.json`).
+- `auto` - use the HA broker when available; otherwise use external settings.
+- `ha` - force the Home Assistant broker.
+- `external` - use `external_mqtt_host`, `external_mqtt_port`,
+  `external_mqtt_username`, `external_mqtt_password`.
 
-Files under `./config/etc/` are **auto-generated on startup** — do not edit them manually.
+### Docker standalone
 
-**Meter fields:**
+Docker uses `docker/entrypoint.sh`. The default data directory is `/config`, and
+the WebGUI listens on port `8099`.
 
-| Field | Description |
-|-------|-------------|
-| `id` | Your label (used in MQTT topic and HA sensor name) |
-| `meter_id` | 8-digit serial number (from LISTEN mode) |
-| `type` | wmbusmeters driver (from LISTEN mode), or `auto` |
-| `type_other` | Custom driver name — only when `type` is `other` |
-| `key` | Encryption key in HEX; leave empty if the meter is not encrypted |
+`docker/entrypoint.sh` creates `/config/options.json` if it is missing, reads
+MQTT settings from it, then starts `webui.py` and `bridge.sh`.
 
-Example `options.json`:
+### Runtime files
 
-```json
-{
-  "raw_topic": "wmbus_bridge/+/telegram",
-  "loglevel": "normal",
-  "filter_hex_only": true,
-  "discovery_enabled": true,
-  "state_prefix": "wmbusmeters",
-  "search_mode": false,
-  "search_expected_value_m3": "0",
-  "search_tolerance_m3": "0.05",
-  "mqtt_mode": "external",
-  "external_mqtt_host": "192.168.1.10",
-  "external_mqtt_port": 1883,
-  "external_mqtt_username": "user",
-  "external_mqtt_password": "pass",
-  "meters": [
-    {
-      "id": "cold_water_bathroom",
-      "meter_id": "41553221",
-      "type": "mkradio3",
-      "key": ""
-    },
-    {
-      "id": "heat_apartment",
-      "meter_id": "03534275",
-      "type": "hydrodigit",
-      "key": "00112233445566778899AABBCCDDEEFF"
-    }
-  ]
-}
-```
+Home Assistant uses `/data`; Docker usually uses `/config`.
 
-Restart after changes:
+- `options.json` - user configuration.
+- `status.json` - MQTT/pipeline/config status.
+- `status_meters.tsv` - last decoded configured meters.
+- `status_candidates.tsv` - LISTEN candidates.
+- `status_events.tsv` - runtime events.
+- `status_rate_1m.json` and `status_rate_history.tsv` - telegram rate stats.
+- `status_candidate_values.tsv` - candidate preview values.
+- `status_esp_telegram_devices.tsv` - active ESP devices detected from RAW topic.
+- `status_esp_events.tsv`, `status_esp_diag.json` - ESP diagnostics.
+- `.reload_pipeline`, `.reload_listen` - soft reload flags.
 
-```bash
-docker compose restart wmbus
-```
+### License and attribution
 
-#### Notes
+The whole project is distributed under GNU GPL v3.0. The full text is in
+[LICENSE](LICENSE).
 
-- `./config` must be **writable** (do not mount as `:ro`) — the bridge creates `options.json` and wmbusmeters config there.
-- Default `raw_topic` is `wmbus_bridge/+/telegram` — make sure your receiver publishes to the same topic.
+The project contains and modifies code derived from:
 
-#### Manual MQTT test
+- `wmbusmeters` - https://github.com/wmbusmeters/wmbusmeters - GPL-3.0
+- `wmbusmeters-ha-addon` - https://github.com/wmbusmeters/wmbusmeters-ha-addon - GPL-3.0
 
-```bash
-mosquitto_pub -h localhost -p 1883 -t 'wmbus_bridge/any/telegram' -m '<HEX_TELEGRAM>'
-mosquitto_sub -h localhost -p 1883 -t 'wmbusmeters/#' -v
-```
+The new WebGUI is inspired by the Zigbee2MQTT workflow: separate frontend,
+backend API and live updates. Based on the current local comparison, this repo
+does not include copied Zigbee2MQTT code or assets. If such code is added later,
+the relevant copyright notices and GPL-3.0 obligations must be preserved.
 
----
-
-⚠️ **Do not install the official wmbusmeters add-on in parallel.** This add-on bundles its own wmbusmeters instance and replaces it for this use case.
-
-### Upstream projects
-
-- wmbusmeters — https://github.com/wmbusmeters/wmbusmeters (GPL-3.0)
-- wmbusmeters-ha-addon — https://github.com/wmbusmeters/wmbusmeters-ha-addon (GPL-3.0)
-
-### License
-
-This repository contains and modifies code derived from **wmbusmeters-ha-addon** (GPL-3.0). The entire project is distributed under:
-
-**GNU General Public License v3.0 (GPL-3.0)**
+`rootfs/usr/share/wmbus-webui/assets/morphdom.min.js` is the MIT-licensed
+`morphdom` library. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
