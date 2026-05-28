@@ -730,6 +730,30 @@
   }
 
   // ──────────────────────────────────────────────────────────────────────
+  // Shared HA state machine — used by both the pipeline HA tile and the
+  // workspace HA drill-down. The 2-bit truth table over (discovery_ok,
+  // meter_count > 0) maps to one of four named states; each carries a
+  // localised label and the CSS dot class to render. Single source of
+  // truth means relabelling/recolouring HA states is a one-line edit.
+  function haStatusModel(model, meterCount) {
+    const ok = !!model.discovery_ok;
+    const hasMeters = meterCount > 0;
+    const key = ok
+      ? (hasMeters ? "live" : "ready")
+      : (hasMeters ? "publishing" : "idle");
+    // dot classes match app.css — "ok" green, "ok live" green+glow,
+    // "warn" yellow, empty string falls through to default gray.
+    const dotClassByKey = {live: "ok live", ready: "ok", publishing: "warn", idle: ""};
+    const labelKeyByKey = {
+      live:       ["pipeline_ha_live_via_mqtt", "live via MQTT"],
+      ready:      ["pipeline_ha_ready",         "ready"],
+      publishing: ["pipeline_ha_publishing",    "publishing…"],
+      idle:       ["pipeline_ha_idle",          "idle"],
+    };
+    const [labelKey, labelFallback] = labelKeyByKey[key];
+    return {key, label: t(labelKey, labelFallback), dotClass: dotClassByKey[key]};
+  }
+
   // Pipeline header — ESP → MQTT → wmbusmeters → HA
   // Each node shows a status dot and a one-line metric. Click drills down
   // into a workspace panel below. The horizontal arrows carry the current
@@ -739,6 +763,7 @@
     const data = state.data || {};
     const pipe = model.pipe || {};
     const mqtt = model.mqtt || {};
+    const cfg  = model.cfg  || {};
     const esp  = (data.esp || {}).diag || {};
     const espActive = model.rate_source === "esp";
     const cur  = Number(model.rate_current_min || 0);
@@ -757,6 +782,13 @@
     const rawCount       = Number(model.raw_count || 0);
     const decodedCount   = Number(model.decoded_count || 0);
     const hasLiveRate    = cur > 0;
+
+    // ─── HA node — shared values lifted out of the template ───
+    const haState         = haStatusModel(model, meterCount);
+    const discoveryPrefix = (cfg.discovery_prefix || "").trim();
+    const metersLabel     = t("pipeline_ha_meters_short", "meters");
+    const haSubMeters     = `${meterCount} ${metersLabel}`;
+    const haSub           = discoveryPrefix ? `${discoveryPrefix} · ${haSubMeters}` : haSubMeters;
 
     // ─── ESP node ───
     // Status priority: ESP confirmed active (rate_source=="esp") → green live;
@@ -846,8 +878,8 @@
           <button class="${cls("ha")}" data-action="open-workspace" data-ws="ha" type="button">
             <div class="pipeline-icon">🏠</div>
             <div class="pipeline-title">HA</div>
-            <div class="pipeline-meta">${dot(!!model.discovery_ok, meterCount === 0, !!model.discovery_ok)} ${escapeHtml(model.discovery_ok ? t("pipeline_ha_published", "published") : t("pipeline_ha_pending", "pending"))}</div>
-            <div class="pipeline-sub">${meterCount} ${escapeHtml(t("pipeline_ha_entities_short", "entit."))}</div>
+            <div class="pipeline-meta"><span class="dot ${haState.dotClass}"></span> ${escapeHtml(haState.label)}</div>
+            <div class="pipeline-sub" title="${escapeHtml(discoveryPrefix)}">${escapeHtml(haSub)}</div>
           </button>
         </div>
         ${pipelineWorkspace(model)}
@@ -962,16 +994,29 @@
         </div>
       `;
     } else if (state.workspace === "ha") {
-      const cfg  = model.cfg || {};
-      const meterCount = Number(model.meter_count || 0);
+      const cfg          = model.cfg || {};
+      const meterCount   = Number(model.meter_count || 0);
+      const prefix       = (cfg.discovery_prefix || "").trim();
+      const statePrefix  = (cfg.state_prefix || "").trim();
+      // Reuse the shared HA state machine so a single source of truth
+      // drives the tile's pill AND the workspace's status row. Dot uses
+      // the standard .dot.{ok,warn} CSS classes — same convention as
+      // the pipeline tiles, no platform-dependent emoji.
+      const haState = haStatusModel(model, meterCount);
       body = `
         <h3>🏠 ${escapeHtml(t("workspace_ha_title", "Home Assistant"))}</h3>
+        <p style="font-size:12px;color:#9eafba;margin:6px 0 12px;">
+          ${escapeHtml(t("workspace_ha_explanation", "The bridge publishes MQTT discovery messages with the prefixes below. HA's MQTT integration picks them up automatically and creates a device per configured meter, with one entity per measurement field."))}
+        </p>
         <div class="kv">
-          <div>${escapeHtml(t("discovery_label", "Discovery"))}</div><div>${model.discovery_ok ? "✓ published" : "✗ pending"}</div>
-          <div>${escapeHtml(t("workspace_ha_prefix", "Discovery prefix"))}</div><div class="mono">${escapeHtml(cfg.discovery_prefix || "—")}</div>
-          <div>${escapeHtml(t("workspace_ha_state_prefix", "State prefix"))}</div><div class="mono">${escapeHtml(cfg.state_prefix || "—")}</div>
-          <div>${escapeHtml(t("workspace_ha_entities", "Entities published"))}</div><div>${meterCount}</div>
+          <div>${escapeHtml(t("discovery_label", "Discovery"))}</div><div><span class="dot ${haState.dotClass}" style="margin-right:6px;"></span>${escapeHtml(haState.label)}</div>
+          <div>${escapeHtml(t("workspace_ha_prefix", "Discovery prefix"))}</div><div class="mono">${escapeHtml(prefix || "—")}</div>
+          <div>${escapeHtml(t("workspace_ha_state_prefix", "State prefix"))}</div><div class="mono">${escapeHtml(statePrefix || "—")}</div>
+          <div>${escapeHtml(t("workspace_ha_meters_configured", "Configured meters"))}</div><div>${meterCount}</div>
         </div>
+        <p style="font-size:11px;color:#7a8a96;margin:12px 0 0;padding:8px 12px;background:#0e1a23;border:1px dashed #2c4555;border-radius:6px;">
+          💡 ${escapeHtml(t("workspace_ha_where_to_find", "In Home Assistant: Settings → Devices & Services → MQTT integration → look for devices starting with 'wmbus_'."))}
+        </p>
       `;
     }
     return `<div class="pipeline-workspace">${back}${body}</div>`;
