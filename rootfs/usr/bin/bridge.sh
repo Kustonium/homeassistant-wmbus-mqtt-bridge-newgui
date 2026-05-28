@@ -45,6 +45,10 @@ STATUS_LAST_RAW_FILE="${BASE}/status_last_raw_seen.txt"
 STATUS_RECENT_RAW_FILE="${BASE}/status_recent_raw.tsv"
 STATUS_CANDIDATE_ANALYSIS_FILE="${BASE}/status_candidate_analysis.tsv"
 STATUS_CANDIDATE_RAW_FILE="${BASE}/status_candidate_raw.tsv"
+# Per-candidate decoded value preview — written by parse_listen_candidates when
+# the parallel LISTEN instance has a meter-preview-<id> file in its config dir.
+# Format: id<TAB>value<TAB>value_key<TAB>iso_timestamp
+STATUS_CANDIDATE_VALUES_FILE="${BASE}/status_candidate_values.tsv"
 SEARCH_MATCHES_FILE="${BASE}/search_matches.tsv"
 SEARCH_STATUS_FILE="${BASE}/search_status.json"
 
@@ -66,7 +70,7 @@ RAW_RATE_CUR_MIN_EPOCH=0
 RAW_RATE_CUR_MIN_COUNT=0
 RAW_RATE_PREV_MIN_COUNT=0
 
-touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
+touch "${STATUS_METERS_FILE}" "${STATUS_CANDIDATES_FILE}" "${STATUS_EVENTS_FILE}" "${STATUS_SEEN_FILE}" "${STATUS_LAST_RAW_FILE}" "${STATUS_RECENT_RAW_FILE}" "${STATUS_CANDIDATE_ANALYSIS_FILE}" "${STATUS_CANDIDATE_RAW_FILE}" "${STATUS_CANDIDATE_VALUES_FILE}" "${SEARCH_MATCHES_FILE}" "${SEARCH_STATUS_FILE}"
 [[ -f "${STATUS_RAW_COUNT_FILE}" ]] || echo "0" > "${STATUS_RAW_COUNT_FILE}"
 
 iso_now() {
@@ -1506,6 +1510,40 @@ emit_snippet_if_new() {
 # directly (status_candidate_seen writes them via awk+mv), which is
 # what the WebGUI actually reads for the candidate panel.
 # ------------------------------------------------------------
+# _store_candidate_value: extracts (id, primary_numeric_value, value_key) from a
+# decoded wmbusmeters JSON telegram and writes/updates a single row in
+# status_candidate_values.tsv. Called only for telegrams from candidates that
+# have a meter-preview-<id> file in /data/listen/etc/wmbusmeters.d/ (webui.py
+# writes those when the user clicks "Preview value" on the Discover page).
+# Picks the FIRST numeric-valued field that isn't metadata (id, rssi, timestamp…),
+# which for water/heat meters is typically total_m3 and for electricity is
+# something like current_power_consumption_kw — exactly what the user wants
+# to see to identify "their" meter.
+_store_candidate_value() {
+  local json_line="$1"
+  local id value_key value now tmp
+  id="$(jq -r '.id // empty' <<<"${json_line}" 2>/dev/null)"
+  [[ -n "${id}" ]] || return 0
+  # Pick the first sensible numeric field. Skip wmbusmeters metadata.
+  IFS=$'\t' read -r value_key value < <(
+    jq -r '
+      to_entries[]
+      | select(.key as $k
+          | (["_","id","name","meter","media","timestamp","device_date_time","rssi","lqi","status","driver","type"]
+              | index($k)) | not)
+      | select((.value|type)=="number")
+      | "\(.key)\t\(.value)"
+    ' <<<"${json_line}" 2>/dev/null | head -n 1
+  )
+  [[ -n "${value}" ]] || return 0
+  now="$(iso_now)"
+  tmp="${STATUS_CANDIDATE_VALUES_FILE}.tmp"
+  # Remove any previous row for this id, then append the new one.
+  awk -F '\t' -v id="${id}" '$1 != id {print}' "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null > "${tmp}" || true
+  printf '%s\t%s\t%s\t%s\n' "${id}" "${value}" "${value_key}" "${now}" >> "${tmp}"
+  mv "${tmp}" "${STATUS_CANDIDATE_VALUES_FILE}" 2>/dev/null || true
+}
+
 parse_listen_candidates() {
   # Suppress status.json writes from this subshell to prevent races
   # with the parent shell's pipeline writes.
@@ -1513,6 +1551,14 @@ parse_listen_candidates() {
 
   local last_id="" last_driver="" last_type=""
   while IFS= read -r line; do
+    # Decoded JSON output — present only when LISTEN has a meter-preview-<id>
+    # config matching this telegram's ID. Capture the primary numeric value
+    # for the WebGUI "Preview value" feature.
+    if [[ "${line}" == \{*\"_\":\"telegram\"* ]]; then
+      _store_candidate_value "${line}"
+      continue
+    fi
+    # Plain listen-mode text output — extract candidate metadata.
     if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
       last_id="${BASH_REMATCH[1]}"
       last_type=""
@@ -1707,23 +1753,47 @@ start_listen_instance() {
     return 0
   fi
   (
-    ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
-      | awk '
-          function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
-          {
-            gsub(/[[:space:]]/, "", $0);
-            sub(/^0x/i, "", $0);
-            if (!ishex($0)) next;
-            if ((length($0) % 2) != 0) next;
-            print $0;
-            fflush();
-          }
-        ' \
-      | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
-      | parse_listen_candidates
+    # ── LISTEN supervisor loop ──
+    # Runs the listen pipeline (mosquitto_sub | awk | wmbusmeters | parse).
+    # When /data/.reload_listen flag appears (touched by webui.py /api/preview-
+    # candidate or /api/cancel-preview), kills the current pipeline and
+    # restarts it. This lets wmbusmeters pick up newly added meter-preview-<id>
+    # files in /data/listen/etc/wmbusmeters.d/ without touching the DECODE
+    # pipeline. Reload cycle ~2-3 s.
+    while true; do
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+        | awk '
+            function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
+            {
+              gsub(/[[:space:]]/, "", $0);
+              sub(/^0x/i, "", $0);
+              if (!ishex($0)) next;
+              if ((length($0) % 2) != 0) next;
+              print $0;
+              fflush();
+            }
+          ' \
+        | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
+        | parse_listen_candidates &
+      pipeline_pid=$!
+      # Poll for reload flag or natural exit.
+      while kill -0 "${pipeline_pid}" 2>/dev/null; do
+        if [[ -f "${BASE}/.reload_listen" ]]; then
+          rm -f "${BASE}/.reload_listen" 2>/dev/null || true
+          pkill -TERM -P "${pipeline_pid}" 2>/dev/null || true
+          kill -TERM "${pipeline_pid}" 2>/dev/null || true
+          wait "${pipeline_pid}" 2>/dev/null || true
+          break
+        fi
+        sleep 2
+      done
+      wait "${pipeline_pid}" 2>/dev/null || true
+      # Brief pause before restart to avoid tight-looping on persistent failures.
+      sleep 1
+    done
   ) &
   LISTEN_PID=$!
-  log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — provides always-on candidate visibility."
+  log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — supervisor loop with .reload_listen support."
 }
 
 stop_listen_instance() {

@@ -44,6 +44,14 @@ STATUS_ESP_DIAG_JSON = BASE / "status_esp_diag.json"
 STATUS_ESP_EVENTS_FILE = BASE / "status_esp_events.tsv"
 STATUS_ESP_SUGGESTION_FILE = BASE / "status_esp_suggestion.json"
 STATUS_ESP_BOOT_FILE = BASE / "status_esp_boot.json"
+# Per-candidate preview values written by bridge.sh's parallel LISTEN instance
+# when it has a meter-preview-<id> file in LISTEN_BASE/etc/wmbusmeters.d/.
+STATUS_CANDIDATE_VALUES_FILE = BASE / "status_candidate_values.tsv"
+# LISTEN-only config dir — separate from /data/etc which holds the user's
+# permanent meters. Preview files go here so they affect only the LISTEN
+# instance (decode pipeline reads /data/etc/wmbusmeters.d/).
+LISTEN_METER_DIR = BASE / "listen" / "etc" / "wmbusmeters.d"
+RELOAD_LISTEN_FLAG = BASE / ".reload_listen"
 ZERO_AES_KEY = "00000000000000000000000000000000"
 
 
@@ -732,9 +740,28 @@ def state(include_ignored: bool = False) -> dict:
     search_status = read_search_status()
     analysis = read_candidate_analysis()
     ignored = ignored_ids()
+    # Preview values written by bridge.sh's LISTEN instance when a meter-preview
+    # config exists. Indexed by id for fast lookup below.
+    preview_rows = read_tsv(
+        STATUS_CANDIDATE_VALUES_FILE,
+        ["id", "preview_value", "preview_value_key", "preview_ts"],
+    )
+    preview_by_id = {r.get("id", ""): r for r in preview_rows if r.get("id")}
     for c in candidates:
         c["ignored"] = "true" if c.get("id") in ignored else "false"
         c["analysis"] = analysis.get(c.get("id") or "", {})
+        # preview_active = there's a meter-preview-<id> file in the LISTEN config dir.
+        # Single source of truth = filesystem; the TSV row may linger for a brief
+        # window after cancel until the next .reload_listen cycle clears it.
+        cid = (c.get("id") or "").lower()
+        if cid:
+            preview_file = LISTEN_METER_DIR / f"meter-preview-{cid}"
+            c["preview_active"] = "true" if preview_file.exists() else "false"
+            pv = preview_by_id.get(c.get("id") or "")
+            if pv:
+                c["preview_value"]     = pv.get("preview_value", "")
+                c["preview_value_key"] = pv.get("preview_value_key", "")
+                c["preview_ts"]        = pv.get("preview_ts", "")
 
     # Build options_meter_ids early — used both for TSV filtering and candidate dedup.
     # options.get("meters") may be None (key absent) or [] (all removed).
@@ -2583,6 +2610,7 @@ class Handler(BaseHTTPRequestHandler):
         api_suffixes = (
             '/api/app', '/api/events', '/api/status', '/api/add-meter', '/api/remove-meter',
             '/api/search-control', '/api/restart-bridge', '/api/reload-pipeline',
+            '/api/preview-candidate', '/api/cancel-preview',
             '/api/ignore', '/api/unignore',
         )
         if any(path.endswith(suffix) for suffix in api_suffixes):
@@ -2612,8 +2640,70 @@ class Handler(BaseHTTPRequestHandler):
             key = (params.get('key') or [''])[0].strip()
             meter_name = (params.get('meter_name') or [''])[0].strip()
             ok, msg = add_meter_to_options(meter_id, driver, key, meter_name=meter_name)
+            # When a previewed candidate is added permanently, drop the
+            # preview meter file so the LISTEN instance doesn't keep
+            # decoding the same telegrams that DECODE now handles.
+            if ok and meter_id:
+                preview_path = LISTEN_METER_DIR / f"meter-preview-{meter_id.lower()}"
+                try:
+                    if preview_path.exists():
+                        preview_path.unlink()
+                        RELOAD_LISTEN_FLAG.touch()
+                except OSError:
+                    pass
             webui_add_event('ok' if ok else 'error', msg)
             self._send_json(200 if ok else 400, {"ok": ok, "message": msg})
+            return
+        if path.endswith('/api/preview-candidate'):
+            # Drop a temporary meter-preview-<id> file into the LISTEN instance's
+            # config dir. bridge.sh's LISTEN supervisor sees the .reload_listen
+            # flag, restarts the listen pipeline (~2-3 s), and wmbusmeters then
+            # starts decoding that ID — value lands in status_candidate_values.tsv.
+            # No effect on the DECODE pipeline / configured meters / MQTT publish.
+            cid = (params.get('id') or [''])[0].strip().lower()
+            drv = (params.get('driver') or ['auto'])[0].strip()
+            if not re.match(r'^[0-9a-f]{8}$', cid):
+                self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
+                return
+            try:
+                LISTEN_METER_DIR.mkdir(parents=True, exist_ok=True)
+                pf = LISTEN_METER_DIR / f"meter-preview-{cid}"
+                pf.write_text(
+                    f"name=preview_{cid}\nid={cid}\n" + (f"driver={drv}\n" if drv and drv != 'auto' else ""),
+                    encoding='utf-8'
+                )
+                RELOAD_LISTEN_FLAG.touch()
+                webui_add_event('ok', f'Preview value requested for {cid}.')
+                self._send_json(200, {"ok": True, "message": "Preview requested. Value will appear within ~10 s once a telegram arrives."})
+            except Exception as exc:
+                webui_add_event('error', f'Preview failed for {cid}: {exc}')
+                self._send_json(500, {"ok": False, "message": f"Preview failed: {exc}"})
+            return
+        if path.endswith('/api/cancel-preview'):
+            # Remove meter-preview-<id> file + its TSV row + reload LISTEN.
+            cid = (params.get('id') or [''])[0].strip().lower()
+            if not re.match(r'^[0-9a-f]{8}$', cid):
+                self._send_json(400, {"ok": False, "message": f"Invalid id: {cid}"})
+                return
+            try:
+                pf = LISTEN_METER_DIR / f"meter-preview-{cid}"
+                if pf.exists():
+                    pf.unlink()
+                # Best-effort: also strip the row from the TSV so the WebGUI
+                # stops showing a stale value while waiting for LISTEN reload.
+                try:
+                    if STATUS_CANDIDATE_VALUES_FILE.exists():
+                        lines = STATUS_CANDIDATE_VALUES_FILE.read_text(encoding='utf-8', errors='replace').splitlines()
+                        kept = [l for l in lines if not l.lower().startswith(cid + '\t')]
+                        STATUS_CANDIDATE_VALUES_FILE.write_text('\n'.join(kept) + ('\n' if kept else ''), encoding='utf-8')
+                except OSError:
+                    pass
+                RELOAD_LISTEN_FLAG.touch()
+                webui_add_event('ok', f'Preview canceled for {cid}.')
+                self._send_json(200, {"ok": True, "message": "Preview canceled."})
+            except Exception as exc:
+                webui_add_event('error', f'Cancel preview failed for {cid}: {exc}')
+                self._send_json(500, {"ok": False, "message": f"Cancel failed: {exc}"})
             return
         if path.endswith('/api/search-control'):
             action = (params.get('action') or ['start'])[0]
