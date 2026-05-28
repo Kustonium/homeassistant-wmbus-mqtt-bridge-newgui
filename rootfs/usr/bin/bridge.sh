@@ -641,6 +641,34 @@ format=json
 EOFCONF
 
 # ------------------------------------------------------------
+# Listen-only wmbusmeters config: SECONDARY instance for candidate
+# visibility in DECODE mode. Separate config dir under ${BASE}/listen
+# with NO meter files — this instance always runs in pure listen mode
+# and emits "Received telegram from: XXXXXXXX" / type: / driver: lines
+# for every wMBus telegram seen, regardless of how many meters the user
+# has configured in the primary instance. Spawned by run_once() only
+# when METERS_COUNT > 0 (otherwise the primary instance is already in
+# listen mode and the secondary would be redundant).
+#
+# Shares the SAME wmbusmeters binary as the primary — only the config
+# dir differs. User-uploaded binary upgrades are picked up by both
+# instances on addon restart with no additional work.
+# ------------------------------------------------------------
+LISTEN_BASE="${BASE}/listen"
+LISTEN_ETC="${LISTEN_BASE}/etc"
+LISTEN_METER_DIR="${LISTEN_ETC}/wmbusmeters.d"
+LISTEN_CONF_FILE="${LISTEN_ETC}/wmbusmeters.conf"
+mkdir -p "${LISTEN_METER_DIR}"
+# Defensive — the listen instance must NEVER have meter files (would force decode)
+rm -f "${LISTEN_METER_DIR}/meter-"* 2>/dev/null || true
+cat > "${LISTEN_CONF_FILE}" <<EOFLISTEN
+loglevel=${LOGLEVEL}
+device=stdin:hex
+logfile=/dev/stdout
+format=json
+EOFLISTEN
+
+# ------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------
 normalize_meter_id() {
@@ -1442,6 +1470,50 @@ emit_snippet_if_new() {
 }
 
 # ------------------------------------------------------------
+# parse_listen_candidates
+# Reads wmbusmeters listen-mode stdout from stdin and emits candidate
+# updates (status_candidates.tsv, status_candidate_analysis.tsv, events).
+# Mirrors the inline listen logic from run_once() (lines that match
+# "Received telegram from:" / type: / driver:), but lives in a parallel
+# subshell so it can run alongside the main DECODE pipeline.
+#
+# write_status_json is overridden to a no-op here — the candidate
+# subshell holds a stale snapshot of the parent's STATUS_* vars at fork
+# time, so letting it write status.json would clobber the parent's
+# decoded-counter / last-seen state. The TSV files are still updated
+# directly (status_candidate_seen writes them via awk+mv), which is
+# what the WebGUI actually reads for the candidate panel.
+# ------------------------------------------------------------
+parse_listen_candidates() {
+  # Suppress status.json writes from this subshell to prevent races
+  # with the parent shell's pipeline writes.
+  write_status_json() { :; }
+
+  local last_id="" last_driver="" last_type=""
+  while IFS= read -r line; do
+    if [[ "${line}" =~ ^Received\ telegram\ from:\ ([0-9]{8}) ]]; then
+      last_id="${BASH_REMATCH[1]}"
+      last_type=""
+      last_driver=""
+    elif [[ "${line}" =~ ^[[:space:]]*type:[[:space:]]*(.*)$ ]]; then
+      last_type="${BASH_REMATCH[1]}"
+    elif [[ "${line}" =~ ^[[:space:]]*driver:\ ([a-zA-Z0-9_]+) ]]; then
+      last_driver="${BASH_REMATCH[1]}"
+    fi
+    if [[ -n "${last_id}" && -n "${last_driver}" ]]; then
+      if [[ "${SEARCH_MODE}" == "true" && "${SEARCH_EXPECTED_VALUE_M3}" != "0" ]]; then
+        search_cache_candidate "${last_id}" "${last_driver}" "${last_type}"
+      else
+        emit_snippet_if_new "${last_id}" "${last_driver}" "${last_type}"
+      fi
+      last_id=""
+      last_driver=""
+      last_type=""
+    fi
+  done
+}
+
+# ------------------------------------------------------------
 # Pipeline
 # ------------------------------------------------------------
 log "Starting wmbusmeters..."
@@ -1450,6 +1522,39 @@ run_once() {
   last_id=""
   last_driver=""
   last_type=""
+
+  # ─── Parallel LISTEN-only wmbusmeters (candidate visibility in DECODE mode) ───
+  # When user has configured meters, the primary wmbusmeters runs in DECODE
+  # mode and stops emitting "Received telegram from:" lines for unconfigured
+  # devices — the WebGUI candidate list freezes. To keep candidates fresh,
+  # spawn a SECOND wmbusmeters instance subscribed to the same RAW_TOPIC,
+  # using ${LISTEN_BASE} as its config dir (no meter files there). The
+  # secondary instance only emits candidate IDs; it does not publish state
+  # or discovery. Decode flow stays exactly the same.
+  #
+  # Skipped when METERS_COUNT == 0 — the primary instance is already in
+  # listen mode (current single-instance behavior, no overhead added).
+  local LISTEN_PID=""
+  if [[ "${METERS_COUNT}" -gt 0 ]]; then
+    (
+      ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
+        | awk '
+            function ishex(s) { return (s ~ /^[0-9A-Fa-f]+$/) }
+            {
+              gsub(/[[:space:]]/, "", $0);
+              sub(/^0x/i, "", $0);
+              if (!ishex($0)) next;
+              if ((length($0) % 2) != 0) next;
+              print $0;
+              fflush();
+            }
+          ' \
+        | ${STDBUF_BIN} /usr/bin/wmbusmeters --useconfig="${LISTEN_BASE}" 2>&1 \
+        | parse_listen_candidates
+    ) &
+    LISTEN_PID=$!
+    log "Parallel LISTEN instance started (pid=${LISTEN_PID}) — keeps candidate list alive while ${METERS_COUNT} meter(s) decode."
+  fi
 
   if [[ "${FILTER_HEX_ONLY}" == "true" ]]; then
   ${STDBUF_BIN} /usr/bin/mosquitto_sub "${SUB_ARGS[@]}" "${SUB_EXTRA[@]}" -t "${RAW_TOPIC}" -F '%p' \
@@ -1565,6 +1670,26 @@ else
         fi
 done
 fi
+
+  # ─── Cleanup parallel LISTEN instance ──────────────────────────────────
+  # Main pipeline has exited (pipe closed / wmbusmeters died / SIGTERM).
+  # Kill the secondary listen subshell + its direct children (mosquitto_sub,
+  # awk, wmbusmeters --useconfig=LISTEN_BASE) so the restart loop starts
+  # with a clean slate. Without explicit pkill -P the grandchildren would be
+  # orphaned (re-parented to init) and would keep racing the next iteration
+  # on status_candidates.tsv. The restart_on_exit loop above respawns them.
+  if [[ -n "${LISTEN_PID}" ]]; then
+    log "Stopping parallel LISTEN instance (pid=${LISTEN_PID})..."
+    # 1. TERM the subshell's direct children (mosquitto_sub | awk | wmbusmeters)
+    pkill -TERM -P "${LISTEN_PID}" 2>/dev/null || true
+    # 2. TERM the subshell process itself
+    kill -TERM "${LISTEN_PID}" 2>/dev/null || true
+    # 3. Reap — wait drops the entry from the job table
+    wait "${LISTEN_PID}" 2>/dev/null || true
+    # 4. Belt-and-suspenders for any straggler that ignored SIGTERM
+    pkill -KILL -P "${LISTEN_PID}" 2>/dev/null || true
+    LISTEN_PID=""
+  fi
 }
 
 # ------------------------------------------------------------
